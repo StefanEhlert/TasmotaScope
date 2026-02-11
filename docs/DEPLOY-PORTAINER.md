@@ -181,16 +181,34 @@ Portainer zeigt die laufenden Container weiterhin unter **Containers** an; du ve
 
 Der Build eines der Images (Backend oder Frontend) schlägt beim `npm run build` fehl. **Exit Code 2** kommt oft von TypeScript/Vite (Kompilierfehler) oder von **zu wenig Speicher** (Node bricht ab).
 
-**Was du tun kannst:**
+**Wichtig: Portainer zeigt keine detaillierten Build-Logs in der Oberfläche.** Die Meldung „returned a non-zero code: 2“ ist alles, was du siehst – welcher Dienst scheitert und der genaue Fehler (z.B. TypeScript-Zeile oder „heap out of memory“) werden in der UI **nicht** angezeigt. Du musst den Build deshalb einmal **außerhalb von Portainer** laufen lassen, um die echte Fehlermeldung zu sehen.
 
-1. **Vollständigen Build-Log ansehen**  
-   In Portainer beim fehlgeschlagenen Deploy den **Build-Log** (bzw. die Fehlerausgabe) durchscrollen. Dort steht, ob **backend** oder **frontend** scheitert und die genaue Meldung (z.B. TypeScript-Fehler oder „JavaScript heap out of memory“).
+**So bekommst du den echten Fehler (per SSH auf dem Server):**
 
-2. **Speicherlimit für Node erhöhen (bereits im Projekt)**  
-   In den Dockerfiles ist für den Build `NODE_OPTIONS=--max-old-space-size=...` gesetzt (Frontend 2048 MB, Backend 1024 MB). Wenn du auf einem sehr kleinen Server (z.B. 1 GB RAM) bist, den Stack nur mit diesem einen Projekt laufen lassen oder RAM/Swap erhöhen.
+1. Per **SSH** auf den **Docker-Host** verbinden (den Server, auf dem Portainer bzw. der Agent läuft).
+2. Repo klonen (falls noch nicht vorhanden) und Build **manuell** starten, damit die komplette Ausgabe im Terminal erscheint:
+   ```bash
+   cd /opt
+   sudo git clone https://github.com/DEIN-USERNAME/TasmotaScope.git
+   cd TasmotaScope
+   sudo docker compose build 2>&1
+   ```
+   Bei privatem Repo ggf. vorher mit Token klonen:  
+   `git clone https://DEIN-TOKEN@github.com/DEIN-USERNAME/TasmotaScope.git`
+3. Die Ausgabe durchscrollen. Am Ende steht, ob **backend** oder **frontend** abbricht und die **genaue Fehlermeldung** (z.B. „error TS2345“, „Cannot find module“, „JavaScript heap out of memory“). Die letzten 30–50 Zeilen reichen meist; diese kopieren und zum Beheben nutzen (oder hier einfügen).
 
-3. **Bei „heap out of memory“**  
-   Auf dem Server mehr Speicher für Docker/Container bereitstellen oder lokal/auf einer stärkeren Maschine bauen und Images in eine Registry pushen (erweiterte Variante).
+**Optional: Build-Log in Datei speichern**
 
-4. **Bei TypeScript-/Vite-Fehlermeldung im Log**  
-   Die genaue Zeile (Datei + Fehler) aus dem Log nehmen; dann lässt sich der Fehler im Code gezielt beheben. Wenn du die Log-Ausgabe hast, kann man danach gezielt weiter eingrenzen.
+```bash
+cd /opt/TasmotaScope
+sudo docker compose build 2>&1 | tee build.log
+```
+
+Danach `build.log` mit `cat build.log` oder `less build.log` ansehen bzw. per SCP herunterladen.
+
+**Sobald du die echte Fehlermeldung hast:**
+
+- **„JavaScript heap out of memory“** → Speicherproblem. NODE_OPTIONS ist im Projekt schon gesetzt; ggf. Server-RAM/Swap erhöhen oder auf einer stärkeren Maschine bauen.
+- **TypeScript- oder Vite-Fehler (z.B. „error TS…“, „Cannot find module“)** → Die genaue Zeile aus dem Log nehmen; dann kann der Fehler im Code behoben werden.
+
+**Plan B (ohne Portainer-Git):** Wenn du den Build so ohnehin per SSH ausführst, kannst du danach direkt `docker compose up -d` ausführen und den Stack **ohne Portainer-Git-Deploy** betreiben (siehe Abschnitt „Plan B: Ohne Portainer-Git deployen“). Die Container erscheinen in Portainer unter **Containers**.

@@ -33,6 +33,7 @@ type DeviceDoc = {
   fields?: Record<string, unknown>
   raw?: Record<string, unknown>
   backups?: DeviceBackups
+  updatedAt?: string
 }
 
 function buildCouchDbBaseUrl(settings: CouchDbSettings): string {
