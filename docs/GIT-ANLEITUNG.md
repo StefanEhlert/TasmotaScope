@@ -143,3 +143,11 @@ Portainer kann dann beim nächsten **Redeploy** oder **Pull and redeploy** die n
 | 7 | `git push -u origin main` (bei Passwort: Token verwenden) |
 
 Wenn du an einer Stelle eine Fehlermeldung bekommst, die Meldung kopieren und danach googeln oder hier einfügen – dann kann man gezielt helfen.
+
+---
+
+## Portainer meldet „could not find ref main“, obwohl auf GitHub „main“ steht
+
+Das passiert fast immer, wenn das Repository **noch keinen einzigen Commit** hat. GitHub nennt den Standard-Branch „main“, aber dieser Branch existiert erst, wenn du von deinem Rechner aus mindestens einmal gepusht hast.
+
+**Lösung:** Teil 3 oben vollständig durchgehen (im Projektordner: `git init`, `git add .`, `git commit -m "..."`, `git branch -M main`, `git remote add origin <URL>`, `git push -u origin main`). Sobald der erste Push geklappt hat, gibt es auf GitHub den Branch „main“ mit Code – dann funktioniert auch Portainer.

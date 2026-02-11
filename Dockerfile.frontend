@@ -1,6 +1,8 @@
 # Build
 FROM node:20-alpine AS builder
 WORKDIR /app
+# Mehr Speicher für Vite/TypeScript-Build (vermeidet Abbruch auf kleinen Servern)
+ENV NODE_OPTIONS=--max-old-space-size=2048
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
