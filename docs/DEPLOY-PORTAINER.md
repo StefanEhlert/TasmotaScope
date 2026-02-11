@@ -92,7 +92,7 @@ Wenn du **kein Git** nutzen willst, musst du die Images woanders bauen und in de
 | Env (wichtig) | `COUCHDB_PASSWORD` setzen, ggf. `HTTP_PORT` / `COUCHDB_PORT` |
 | Start | Deploy the stack |
 
-Danach: Browser → `http://<Server-IP>:80` (oder dein `HTTP_PORT`), CouchDB in den Einstellungen mit Server-IP und Port 5984 verbinden.
+Danach: Browser → `http://<Server-IP>:80` (oder dein `HTTP_PORT`), CouchDB in den Einstellungen mit Server-IP und Port 5984 verbinden. CouchDB läuft im Single-Node-Modus (Konfiguration in `docker/couchdb-local.ini`), damit keine Fehler wie „_users does not exist“ oder „N=3 but only 1 node“ auftreten.
 
 ---
 
