@@ -1,6 +1,22 @@
 import mqtt, { type IClientOptions, type MqttClient } from 'mqtt'
 import type { MqttSettings } from './types'
 
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b!.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 function normalizePath(path: string) {
   if (!path) {
     return '/'
@@ -18,7 +34,7 @@ function buildClientOptions(settings: MqttSettings): IClientOptions {
   return {
     username: settings.username || undefined,
     password: settings.password || undefined,
-    clientId: settings.clientId || `tasmotascope-${crypto.randomUUID()}`,
+    clientId: settings.clientId || `tasmotascope-${randomId()}`,
     clean: true,
     keepalive: 30,
     reconnectPeriod: 2000,
@@ -36,7 +52,7 @@ export async function testMqttConnection(settings: MqttSettings, timeoutMs = 500
     const url = buildMqttUrl(settings)
     const client = mqtt.connect(url, {
       ...buildClientOptions(settings),
-      clientId: `tasmotascope-test-${crypto.randomUUID()}`,
+      clientId: `tasmotascope-test-${randomId()}`,
       reconnectPeriod: 0,
     })
 
