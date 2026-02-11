@@ -29,30 +29,16 @@ So bringst du TasmotaScope per Portainer-Stack auf deinen Server (z.B. VPS, NAS,
 
 6. **Compose path:** `docker-compose.yml` (relativer Pfad im Repo zur Compose-Datei).
 
-7. **Environment variables (optional, aber sinnvoll):**  
-   Auf „Add environment variable“ klicken und z.B. setzen:
-
-   | Name               | Wert (Beispiel)   | Bedeutung                    |
-   |--------------------|-------------------|------------------------------|
-   | `COUCHDB_USER`     | `admin`           | CouchDB-Benutzer             |
-   | `COUCHDB_PASSWORD` | **sicheres Passwort** | CouchDB-Passwort (unbedingt ändern) |
-   | `COUCHDB_DATABASE` | `tasmotascope`    | App-Datenbank                |
-   | `COUCHDB_PORT`     | `5984`            | CouchDB-Port nach außen      |
-   | `HTTP_PORT`        | `80`              | Port der Weboberfläche       |
-
-   Wenn du z.B. nur Port 8080 für die Weboberfläche nutzen willst: `HTTP_PORT` = `8080`.
+7. **Environment variables (optional):** z.B. `HTTP_PORT` = `3000` (Standard; Port 80 oft belegt). CouchDB läuft separat über `docker-compose.couchdb.yml`, dort ggf. `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DATABASE`, `COUCHDB_PORT` setzen.
 
 8. **Deploy the stack** klicken.  
    Portainer klont das Repo und führt `docker compose up -d --build` aus (Build der Images Backend + Frontend). Beim ersten Mal kann das einige Minuten dauern.
 
-9. **Erreichbarkeit prüfen:**
-   - **Weboberfläche:** `http://<DEINE-SERVER-IP>:80` (bzw. der gewählte `HTTP_PORT`, z.B. 8080).
-   - **CouchDB:** `http://<DEINE-SERVER-IP>:5984` (bzw. `COUCHDB_PORT`).
+9. **Erreichbarkeit:** Weboberfläche unter `http://<DEINE-SERVER-IP>:3000` (bzw. `HTTP_PORT`).
 
-10. **Im Frontend konfigurieren:**
-    - Unter **Einstellungen** → CouchDB:  
-      Host = **IP oder Hostname des Servers**, Port = **5984** (oder dein `COUCHDB_PORT`), Benutzer/Passwort/Datenbank = die Werte aus Schritt 7.
-    - MQTT-Broker wie gewohnt eintragen (Verbindung läuft aus dem Browser).
+10. **CouchDB getrennt starten** (z.B. per Konsole auf dem Server):  
+    `docker compose -f docker-compose.couchdb.yml up -d`  
+    Danach im Frontend unter **Einstellungen** → CouchDB verbinden (Host = Server-IP, Port 5984, User/Pass/Datenbank). MQTT-Broker wie gewohnt eintragen.
 
 ---
 
@@ -75,8 +61,8 @@ Wenn du **kein Git** nutzen willst, musst du die Images woanders bauen und in de
 ## Nach dem Deployment
 
 - **CouchDB-Passwort:** In Produktion `COUCHDB_PASSWORD` unbedingt stark setzen und im Frontend bei den CouchDB-Einstellungen dasselbe Passwort verwenden.
-- **HTTPS:** Für Zugriff von außen empfiehlt sich ein Reverse-Proxy (z.B. Nginx, Traefik, Caddy) mit TLS vor Portainer/Docker. Dann erreichst du z.B. `https://tasmotascope.deinedomain.de` und leitest auf den Container-Port (z.B. 80 oder 8080) weiter.
-- **Firewall:** Ports 80 (bzw. `HTTP_PORT`) und 5984 (bzw. `COUCHDB_PORT`) müssen für den Zugriff von außen freigegeben sein (oder nur über den Reverse-Proxy erreichbar sein).
+- **HTTPS:** Für Zugriff von außen empfiehlt sich ein Reverse-Proxy (z.B. Nginx, Traefik, Caddy) mit TLS vor Portainer/Docker. Dann erreichst du z.B. `https://tasmotascope.deinedomain.de` und leitest auf den Container-Port (z.B. 3000) weiter.
+- **Firewall:** Port 3000 (bzw. `HTTP_PORT`) und ggf. 5984 (CouchDB) müssen für den Zugriff von außen freigegeben sein (oder nur über den Reverse-Proxy erreichbar sein).
 
 ---
 
@@ -89,10 +75,10 @@ Wenn du **kein Git** nutzen willst, musst du die Images woanders bauen und in de
 | URL | Deine Repo-URL (z.B. `https://github.com/.../TasmotaScope.git`) |
 | Branch | z.B. `main` |
 | Compose path | `docker-compose.yml` |
-| Env (wichtig) | `COUCHDB_PASSWORD` setzen, ggf. `HTTP_PORT` / `COUCHDB_PORT` |
+| Env (optional) | z.B. `HTTP_PORT` = `3000` (Standard) |
 | Start | Deploy the stack |
 
-Danach: Browser → `http://<Server-IP>:80` (oder dein `HTTP_PORT`), CouchDB in den Einstellungen mit Server-IP und Port 5984 verbinden. CouchDB läuft im Single-Node-Modus (Konfiguration in `docker/couchdb-local.ini`), damit keine Fehler wie „_users does not exist“ oder „N=3 but only 1 node“ auftreten.
+Danach: Browser → `http://<Server-IP>:3000`. CouchDB separat starten (z.B. in der Konsole): `docker compose -f docker-compose.couchdb.yml up -d`, dann im Frontend unter Einstellungen verbinden.
 
 ---
 
@@ -153,7 +139,7 @@ Wenn der Stack aus Git in Portainer partout nicht funktioniert, kannst du **ohne
    COUCHDB_USER=admin
    COUCHDB_PASSWORD=dein-sicheres-passwort
    COUCHDB_DATABASE=tasmotascope
-   HTTP_PORT=80
+   HTTP_PORT=3000
    COUCHDB_PORT=5984
    ```
    Speichern und Nano verlassen (Strg+O, Enter, Strg+X).
@@ -165,7 +151,7 @@ Wenn der Stack aus Git in Portainer partout nicht funktioniert, kannst du **ohne
    ```
    Ohne Cache-Probleme reicht: `sudo docker compose up -d --build`
 
-5. Erreichbarkeit prüfen: `http://<Server-IP>:80` und `http://<Server-IP>:5984`.
+5. Erreichbarkeit prüfen: `http://<Server-IP>:3000`. CouchDB bei Bedarf separat: `sudo docker compose -f docker-compose.couchdb.yml up -d` (dann Port 5984).
 
 **Später aktualisieren:**
 

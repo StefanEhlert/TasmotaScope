@@ -4,23 +4,22 @@ TasmotaScope ist eine Weboberfläche für Tasmota-Geräte (MQTT, Regeln, Einstel
 
 ## Deployment mit Docker (Produktiv)
 
-Auf dem Docker-Server das Repository klonen (oder Dateien kopieren), dann:
+**Stack (nur Backend + Frontend):**
 
 ```bash
-# Optional: Anpassung per .env
-# COUCHDB_USER=admin
-# COUCHDB_PASSWORD=change-me
-# COUCHDB_DATABASE=tasmotascope
-# COUCHDB_PORT=5984
-# HTTP_PORT=80
-
 docker compose up -d --build
 ```
 
-- **Frontend + API:** http://localhost:80 (bzw. `HTTP_PORT`)
-- **CouchDB:** http://localhost:5984 (bzw. `COUCHDB_PORT`) – für die CouchDB-Einstellungen im Frontend (Host = Server-IP/Hostname, Port = 5984, User/Pass/Datenbank wie in `.env`).
+- **Frontend + API:** http://localhost:3000 (bzw. `HTTP_PORT`)
 
-Im Frontend unter Einstellungen CouchDB verbinden: Host = IP oder Hostname des Servers, Port = 5984 (oder `COUCHDB_PORT`), Benutzer/Passwort/Datenbank wie beim Start gesetzt. MQTT wird weiterhin direkt vom Browser aus verbunden (Broker-URL der MQTT-Instanz angeben).
+**CouchDB separat** (einfache ursprüngliche Variante, z.B. in der Konsole auf dem Server):
+
+```bash
+docker compose -f docker-compose.couchdb.yml up -d
+```
+
+Optional `.env` für CouchDB: `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DATABASE`, `COUCHDB_PORT`.  
+Im Frontend unter Einstellungen CouchDB verbinden: Host = Server-IP/Hostname, Port = 5984, Benutzer/Passwort/Datenbank wie gesetzt. MQTT wird weiterhin direkt vom Browser aus verbunden.
 
 **Installation über Portainer (externer Server):** Schritt-für-Schritt-Anleitung siehe [docs/DEPLOY-PORTAINER.md](docs/DEPLOY-PORTAINER.md).
 

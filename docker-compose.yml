@@ -1,59 +1,9 @@
-# TasmotaScope – Produktiv-Setup mit CouchDB, Backend und Frontend
+# TasmotaScope – Produktiv-Setup (nur Backend + Frontend)
+# CouchDB separat: docker compose -f docker-compose.couchdb.yml up -d
 # Start: docker compose up -d
-# App: http://localhost:80  |  CouchDB: http://localhost:5984 (für Einstellungen im Frontend)
+# App: http://localhost:3000
 
 services:
-  couchdb:
-    image: couchdb:3
-    container_name: tasmotascope-couchdb
-    restart: unless-stopped
-    ports:
-      - "${COUCHDB_PORT:-5984}:5984"
-    environment:
-      COUCHDB_USER: ${COUCHDB_USER:-admin}
-      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-change-me}
-    volumes:
-      - couchdb_data:/opt/couchdb/data
-      - ./docker/couchdb-local.ini:/opt/couchdb/etc/local.d/10-single-node.ini:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5984/_up || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - tasmotascope
-
-  couchdb-init:
-    image: curlimages/curl:latest
-    container_name: tasmotascope-couchdb-init
-    depends_on:
-      couchdb:
-        condition: service_healthy
-    environment:
-      COUCHDB_USER: ${COUCHDB_USER:-admin}
-      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-change-me}
-      COUCHDB_DATABASE: ${COUCHDB_DATABASE:-tasmotascope}
-    command:
-      - sh
-      - -c
-      - |
-        echo 'CouchDB-Init: CORS und Datenbank anlegen...'
-        sleep 3
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_node/_local/_config/httpd/enable_cors" -d '"true"'
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_node/_local/_config/cors/origins" -d '"*"'
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_node/_local/_config/cors/credentials" -d '"true"'
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_node/_local/_config/cors/methods" -d '"GET, PUT, POST, HEAD, DELETE, OPTIONS"'
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_node/_local/_config/cors/headers" -d '"accept, authorization, content-type, origin, referer, x-csrf-token"'
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_users" || true
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_replicator" || true
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/_global_changes" || true
-        curl -sS -X PUT "http://$$COUCHDB_USER:$$COUCHDB_PASSWORD@couchdb:5984/$$COUCHDB_DATABASE" || true
-        echo 'CouchDB-Init fertig.'
-    networks:
-      - tasmotascope
-    restart: "no"
-
   backend:
     build:
       context: ./backend
@@ -72,15 +22,11 @@ services:
     container_name: tasmotascope-frontend
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-80}:80"
+      - "${HTTP_PORT:-3000}:80"
     depends_on:
       - backend
     networks:
       - tasmotascope
-
-volumes:
-  couchdb_data:
-    driver: local
 
 networks:
   tasmotascope:
