@@ -300,7 +300,6 @@ export function parseStructured(text: string): StructuredLine[] {
   const blockStack: BlockType[] = []
   let inDoBlock = false // Track if we're inside a "do" block
   let afterBacklog = false // Track if we're after a "backlog" line
-  let backlogIndentExtra = 0 // Extra indent for lines after backlog
 
   for (let i = 0; i < lines.length; i++) {
     let rawLine = lines[i]
@@ -317,13 +316,11 @@ export function parseStructured(text: string): StructuredLine[] {
     // If we're after backlog and hit endon, reset the backlog flag
     if (afterBacklog && trimmedLine.toLowerCase() === 'endon') {
       afterBacklog = false
-      backlogIndentExtra = 0
     }
     
     // If this is a backlog line, it should be alone
     if (isBacklogLine) {
       afterBacklog = true
-      backlogIndentExtra = 3 // Extra 3 spaces for following lines
       rawLine = 'backlog' // Ensure it's exactly "backlog" alone
     }
     
@@ -445,7 +442,7 @@ export function parseStructured(text: string): StructuredLine[] {
 export function structuredToText(structured: StructuredLine[]): string {
   let afterBacklog = false
   
-  return structured.map((line, index) => {
+  return structured.map((line, _index) => {
     const trimmedText = line.rawText.trim()
     const lowerText = trimmedText.toLowerCase()
     
@@ -530,7 +527,7 @@ export function structuredToCompact(structured: StructuredLine[]): string {
 }
 
 // Render compact format (for editing mode) - blocks in single lines
-export function renderCompact(structured: StructuredLine[], indentWidth: number = 14.4): string {
+export function renderCompact(structured: StructuredLine[], _indentWidth: number = 14.4): string {
   const compactText = structuredToCompact(structured)
   const tokens = parseRule(compactText)
   return renderTokens(tokens, compactText)
@@ -542,11 +539,8 @@ function tokenizeLine(line: string, lineOffset: number): Token[] {
   // Check for comments (//) - everything after // is a comment
   const commentIndex = line.indexOf('//')
   let codePart = line
-  let commentPart = ''
-  
   if (commentIndex !== -1) {
     codePart = line.slice(0, commentIndex)
-    commentPart = line.slice(commentIndex)
   }
   
   // Split by whitespace, but also split words that end with semicolon
@@ -583,10 +577,10 @@ function tokenizeLine(line: string, lineOffset: number): Token[] {
     // If part ends with semicolon, split it
     if (part.endsWith(';') && part.length > 1) {
       const wordPart = part.slice(0, -1)
-      const semicolonPart = ';'
       
       // Process the word part first
       if (wordPart) {
+        let prevToken: Token | null = null
         const start = currentOffset
         const end = start + wordPart.length
         const partLower = wordPart.toLowerCase()
@@ -594,7 +588,6 @@ function tokenizeLine(line: string, lineOffset: number): Token[] {
         
         if (isOnOffValue) {
           // Check previous non-whitespace token
-          let prevToken: Token | null = null
           for (let j = tokens.length - 1; j >= 0; j--) {
             if (tokens[j].type !== 'TEXT' || tokens[j].value.trim()) {
               prevToken = tokens[j]
@@ -926,7 +919,6 @@ export function renderStructured(structured: StructuredLine[], indentWidth: numb
 
     // No block styling - removed backgrounds and borders as they were confusing
     let blockStyle = ''
-    let borderLeftWidth = 0
 
     // Wrap line with indent and block styling
     // Use a single line div that preserves whitespace and matches textarea line-height exactly

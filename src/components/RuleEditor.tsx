@@ -30,6 +30,8 @@ type Props = {
 export type RuleEditorRef = {
   textarea: HTMLTextAreaElement | null
   insertTemplate: (templateText: string) => void
+  openSaveTemplate: () => void
+  openLoadTemplate: () => void
 }
 
 const RuleEditor = forwardRef<RuleEditorRef, Props>(({
@@ -38,12 +40,12 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
   placeholder,
   className = '',
   onHeightChange,
-  onUpload,
+  onUpload: _onUpload,
   enabled = true,
   deviceId,
   brokerId,
-  onSaveTemplate,
-  onLoadTemplate,
+  onSaveTemplate: _onSaveTemplate,
+  onLoadTemplate: _onLoadTemplate,
 }, ref) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
@@ -52,7 +54,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [currentSuggestions, setCurrentSuggestions] = useState<ComponentSuggestion[]>([])
-  const [suggestionPrefix, setSuggestionPrefix] = useState('')
+  const [_suggestionPrefix, setSuggestionPrefix] = useState('')
   const [suggestionPosition, setSuggestionPosition] = useState({ top: 0, left: 0 })
   const suggestionsRef = useRef<HTMLDivElement>(null)
   const pendingCursorPositionRef = useRef<number | null>(null)
@@ -887,7 +889,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     return plainValueRef.current
   }
   
-  // Handle template save
+  // Handle template save (reserved for template UI)
   const handleSaveTemplate = () => {
     const text = getTextForTemplate()
     if (!text.trim()) {
@@ -898,7 +900,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     setShowSaveModal(true)
   }
   
-  // Handle template load
+  // Handle template load (reserved for template UI)
   const handleLoadTemplate = () => {
     setShowLoadModal(true)
   }
@@ -937,12 +939,14 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     }
   }
 
-  // Expose textarea ref and insertTemplate method to parent
+  // Expose textarea ref, insertTemplate and template modal openers to parent
   useImperativeHandle(ref, () => ({
     get textarea() {
       return textareaRef.current
     },
     insertTemplate: handleInsertTemplate,
+    openSaveTemplate: handleSaveTemplate,
+    openLoadTemplate: handleLoadTemplate,
   }), [enabled, onChange])
   
   return (
@@ -1045,7 +1049,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
             pendingCursorPositionRef.current = currentPos
           }
         }}
-        onBlur={(e) => {
+        onBlur={(_e) => {
           // Delay hiding suggestions to allow clicking on them
           setTimeout(() => {
             if (!suggestionsRef.current?.contains(document.activeElement)) {

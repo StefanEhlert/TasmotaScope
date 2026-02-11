@@ -158,10 +158,12 @@ Wenn der Stack aus Git in Portainer partout nicht funktioniert, kannst du **ohne
    ```
    Speichern und Nano verlassen (Strg+O, Enter, Strg+X).
 
-4. Stack starten:
+4. Stack starten (mit `--no-cache`, falls vorher ein Build fehlgeschlagen war und Docker noch alte Dateien aus dem Cache nutzt):
    ```bash
-   sudo docker compose up -d --build
+   sudo docker compose build --no-cache
+   sudo docker compose up -d
    ```
+   Ohne Cache-Probleme reicht: `sudo docker compose up -d --build`
 
 5. Erreichbarkeit prüfen: `http://<Server-IP>:80` und `http://<Server-IP>:5984`.
 
@@ -212,3 +214,10 @@ Danach `build.log` mit `cat build.log` oder `less build.log` ansehen bzw. per SC
 - **TypeScript- oder Vite-Fehler (z.B. „error TS…“, „Cannot find module“)** → Die genaue Zeile aus dem Log nehmen; dann kann der Fehler im Code behoben werden.
 
 **Plan B (ohne Portainer-Git):** Wenn du den Build so ohnehin per SSH ausführst, kannst du danach direkt `docker compose up -d` ausführen und den Stack **ohne Portainer-Git-Deploy** betreiben (siehe Abschnitt „Plan B: Ohne Portainer-Git deployen“). Die Container erscheinen in Portainer unter **Containers**.
+
+**Gleicher Fehler trotz Fix auf GitHub (z. B. weiterhin „updatedAt does not exist“):**  
+Docker hält Build-Schritte in einem **Cache**. Wenn ein früherer Build mit altem Code durchgelaufen ist (oder bis zu einem bestimmten Schritt), kann der nächste Build weiter die **gecachte** Version von `COPY src` nutzen – also den alten Code ohne deinen Fix.  
+**Lösung:** Build **ohne Cache** ausführen. Per SSH im Projektordner:  
+`sudo docker compose build --no-cache`  
+danach `sudo docker compose up -d`.  
+In **Portainer** gibt es beim Stack-Deploy aus Git oft keine „No cache“-Option. Dann zuerst per SSH mit `build --no-cache` zum Laufen bringen; danach kannst du den laufenden Stack in Portainer unter **Containers** verwalten.

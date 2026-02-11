@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BrokerConfig, MqttSettings } from '../lib/types'
 
 type Props = {

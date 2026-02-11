@@ -1,5 +1,4 @@
 import { DeviceState } from '../DeviceState'
-import type { DeviceInfo } from './types'
 
 export type TopicComponent = {
   brokerId?: string

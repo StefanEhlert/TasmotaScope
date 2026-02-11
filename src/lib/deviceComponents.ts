@@ -1,6 +1,5 @@
-import type { DeviceInfo } from './types'
 import { DeviceState } from '../DeviceState'
-import { TASMOTA_TRIGGERS, getAllTriggers } from './tasmotaTriggers'
+import { TASMOTA_TRIGGERS } from './tasmotaTriggers'
 
 export type ComponentSuggestion = {
   type: 'trigger' | 'topic' | 'command'
@@ -446,7 +445,6 @@ function extractSensorsFromPayload(
     // Auch Sensordaten-Felder erkennen (Temperature, Humidity, Pressure, etc.)
     const sensorDataFields = ['Temperature', 'Humidity', 'Pressure', 'Illuminance', 'Distance', 'Weight', 'CO2', 'PM2.5', 'PM10']
     if (sensorDataFields.some(field => key.includes(field))) {
-      const sensorName = prefix || 'Sensor'
       suggestions.push({
         type: 'trigger',
         value: `Sensor${fullKey}`,
