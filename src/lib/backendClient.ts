@@ -61,3 +61,32 @@ export async function requestBackup(
     count: data.count ?? 0,
   }
 }
+
+export async function requestDeleteBackup(
+  baseUrl: string | undefined,
+  params: {
+    deviceId: string
+    brokerId?: string
+    couchdb: CouchDbSettings
+    index: number
+  },
+): Promise<{ count: number; lastAt: string | null }> {
+  const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/backup/delete'
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: params.deviceId,
+      brokerId: params.brokerId,
+      couchdb: params.couchdb,
+      index: params.index,
+    }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    const msg = (data as { error?: string }).error ?? res.statusText
+    throw new Error(msg)
+  }
+  const data = (await res.json()) as { ok?: boolean; count: number; lastAt: string | null }
+  return { count: data.count ?? 0, lastAt: data.lastAt ?? null }
+}

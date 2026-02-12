@@ -7,6 +7,11 @@ type Props = {
   consoleLines: string[]
   onSendCommand: (deviceId: string, command: string, payload: string) => void
   onTogglePower?: (deviceId: string, channelId: number) => void
+  onBackup?: (deviceId: string) => void
+  onDeleteBackup?: (deviceId: string, index: number) => void
+  onUpdateAutoBackup?: (deviceId: string, intervalDays: number | null) => void
+  backingUp?: Record<string, boolean>
+  backendAvailable?: boolean
   onBack: () => void
 }
 
@@ -293,6 +298,276 @@ function valueToSliderPosition(value: number): number {
     return SEG_C_END + (clamped / (MINUTES_COUNT - 1)) * (SEG_D_END - SEG_C_END)
   }
   return SEG_C_END
+}
+
+function formatBackupDate(isoString: string): string {
+  try {
+    const d = new Date(isoString)
+    if (Number.isNaN(d.getTime())) return isoString
+    return d.toLocaleDateString(undefined, {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return isoString
+  }
+}
+
+function getBackupFileName(deviceId: string, createdAt: string): string {
+  const datePart = createdAt.slice(0, 10)
+  return `tasmota-backup-${deviceId}-${datePart}.dmp`
+}
+
+function downloadBackupFile(base64Data: string, deviceId: string, createdAt: string): void {
+  try {
+    const binary = atob(base64Data)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes])
+    const url = URL.createObjectURL(blob)
+    const filename = getBackupFileName(deviceId, createdAt)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('Backup-Download fehlgeschlagen:', err)
+  }
+}
+
+const DownloadIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+)
+
+const TrashIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
+  </svg>
+)
+
+function BackupBlock({
+  device,
+  onCollapse,
+  onDeleteBackup,
+  onUpdateAutoBackup,
+  onBackup,
+  backingUp = {},
+  backendAvailable = false,
+}: {
+  device: DeviceInfo
+  onCollapse: () => void
+  onDeleteBackup?: (deviceId: string, index: number) => void
+  onUpdateAutoBackup?: (deviceId: string, intervalDays: number | null) => void
+  onBackup?: (deviceId: string) => void
+  backingUp?: Record<string, boolean>
+  backendAvailable?: boolean
+}) {
+  const canBackup =
+    backendAvailable && !!device.ip && device.online === true && !backingUp[device.id]
+  const days = device.daysSinceBackup
+  const count = device.backupCount ?? 0
+  const items = device.backupItems ?? []
+  const DEFAULT_AUTO_BACKUP_DAYS = 100
+  const enabledFromDevice =
+    device.autoBackupIntervalDays != null && device.autoBackupIntervalDays > 0
+  const [autoBackupEnabled, setAutoBackupEnabled] = useState(enabledFromDevice)
+  const deviceDays =
+    device.autoBackupIntervalDays != null
+      ? Math.max(1, Math.min(365, device.autoBackupIntervalDays))
+      : DEFAULT_AUTO_BACKUP_DAYS
+  const [inputDays, setInputDays] = useState(String(deviceDays))
+  useEffect(() => {
+    setAutoBackupEnabled(enabledFromDevice)
+  }, [enabledFromDevice])
+  useEffect(() => {
+    setInputDays(String(deviceDays))
+  }, [deviceDays])
+  const parsedDays = (() => {
+    const v = parseInt(inputDays, 10)
+    return Number.isNaN(v) || v < 1 || v > 365
+      ? DEFAULT_AUTO_BACKUP_DAYS
+      : Math.max(1, Math.min(365, v))
+  })()
+  const statusColor =
+    days == null || days >= 100
+      ? 'text-rose-400'
+      : days >= 50
+        ? 'text-blue-400'
+        : 'text-emerald-400'
+
+  return (
+    <ConfigBlock title="Backup" onCollapse={onCollapse}>
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+          <div className="w-full min-w-0 max-w-full space-y-3 sm:max-w-[50%]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-slate-400">Letztes Backup:</span>
+            <span className={statusColor}>
+              {days != null
+                ? days >= 100
+                  ? 'Nie / sehr lange her'
+                  : `vor ${days} Tag${days !== 1 ? 'en' : ''}`
+                : 'Noch kein Backup'}
+            </span>
+            <span className="text-slate-500">·</span>
+            <span className="text-slate-200">{count}/10</span>
+          </div>
+          {items.length > 0 && (
+            <ul className="w-full list-none space-y-1.5 rounded-md border border-slate-800 bg-slate-900/40 p-2">
+              {items.map((item, index) => {
+                const fileName = getBackupFileName(device.id, item.createdAt)
+                return (
+                  <li
+                    key={item.createdAt + index}
+                    className="flex min-w-0 items-center justify-between gap-2 text-sm"
+                  >
+                    <span className="shrink-0 text-slate-300">
+                      {formatBackupDate(item.createdAt)}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-slate-400"
+                      title={fileName}
+                    >
+                      {fileName}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => downloadBackupFile(item.data, device.id, item.createdAt)}
+                        className="rounded p-1.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+                        title="Backup-Datei herunterladen"
+                        aria-label="Herunterladen"
+                      >
+                        <DownloadIcon className="h-4 w-4" />
+                      </button>
+                      {onDeleteBackup && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteBackup(device.id, index)}
+                          className="rounded p-1.5 text-slate-400 hover:bg-slate-700 hover:text-rose-400"
+                          title="Backup löschen"
+                          aria-label="Löschen"
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          </div>
+
+          {onUpdateAutoBackup && (
+          <div className="flex w-full min-w-0 max-w-full flex-col gap-3 sm:max-w-[50%]">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <span className="text-slate-400">Optionen</span>
+            </div>
+            <div className="rounded-md border border-slate-800 bg-slate-900/40 p-4 shrink-0">
+              <h4 className="text-sm font-semibold text-slate-200">
+                Automatisches Backup
+              </h4>
+              <p className="mt-1 text-xs text-slate-400">
+                Sobald das letzte Backup älter als die gewählte Anzahl Tage ist, wird
+                automatisch ein neues Backup erstellt (Backend prüft alle 24 Stunden).
+              </p>
+              <label className="mt-3 flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={autoBackupEnabled}
+                onChange={(e) => {
+                  const checked = e.target.checked
+                  setAutoBackupEnabled(checked)
+                  onUpdateAutoBackup(device.id, checked ? parsedDays : null)
+                }}
+                className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500/50"
+              />
+              <span className="text-sm text-slate-300">Aktivieren</span>
+            </label>
+            {autoBackupEnabled && (
+              <div className="mt-2 flex items-center gap-2">
+                <label htmlFor="auto-backup-days" className="text-sm text-slate-400">
+                  Alle
+                </label>
+                <input
+                  id="auto-backup-days"
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={inputDays}
+                  onChange={(e) => setInputDays(e.target.value)}
+                  onBlur={() => {
+                    const v = Math.max(1, Math.min(365, parsedDays))
+                    setInputDays(String(v))
+                    onUpdateAutoBackup(device.id, v)
+                  }}
+                  className="w-16 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-slate-200"
+                />
+                <span className="text-sm text-slate-400">Tage</span>
+              </div>
+            )}
+            </div>
+            {onBackup && (
+              <div className="flex min-h-[2.5rem] min-w-0 flex-1 flex-col justify-end pt-3">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => onBackup(device.id)}
+                    disabled={!canBackup}
+                    className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={
+                      !device.ip
+                        ? 'Backup benötigt Gerät-IP'
+                        : device.online !== true
+                          ? 'Backup nur bei LWT Online möglich'
+                          : !backendAvailable
+                            ? 'Backend nicht verfügbar'
+                            : backingUp[device.id]
+                              ? 'Backup läuft…'
+                              : 'Aktuelles Backup erstellen'
+                    }
+                  >
+                    {backingUp[device.id] ? 'Backup läuft…' : 'Aktuelles Backup erstellen'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+        </div>
+      </div>
+    </ConfigBlock>
+  )
 }
 
 function PowerConfigContent({
@@ -636,6 +911,11 @@ export default function DeviceSettingsPage({
   consoleLines,
   onSendCommand,
   onTogglePower,
+  onBackup,
+  onDeleteBackup,
+  onUpdateAutoBackup,
+  backingUp = {},
+  backendAvailable = false,
   onBack,
 }: Props) {
   const [inputValue, setInputValue] = useState('')
@@ -808,6 +1088,7 @@ export default function DeviceSettingsPage({
                   deviceId: string
                   channels: PowerChannel[]
                 }
+              | { id: string; title: string; type: 'backup' }
               | { id: string; title: string; type: 'config' }
             const blockList: BlockItem[] = [
               ...sections.map((section) => ({
@@ -827,6 +1108,9 @@ export default function DeviceSettingsPage({
                     },
                   ]
                 : []),
+              ...(onBackup && device
+                ? [{ id: 'backup', title: 'Backup', type: 'backup' as const }]
+                : []),
               ...CONFIG_BLOCK_IDS.map((id) => ({ id, title: id, type: 'config' as const })),
             ]
 
@@ -835,6 +1119,9 @@ export default function DeviceSettingsPage({
             const expandedGridBlocks = expandedList.filter(
               (b): b is BlockItem & { type: 'sensor' | 'power' } =>
                 b.type === 'sensor' || b.type === 'power',
+            )
+            const expandedBackupBlock = expandedList.find(
+              (b): b is BlockItem & { type: 'backup' } => b.type === 'backup',
             )
             const expandedConfigBlocks = expandedList.filter(
               (b): b is BlockItem & { type: 'config' } => b.type === 'config',
@@ -888,6 +1175,19 @@ export default function DeviceSettingsPage({
                           )}
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {expandedBackupBlock && device && (
+                    <div className="device-settings-expanded-item w-full">
+                      <BackupBlock
+                        device={device}
+                        onCollapse={() => setCollapsed(expandedBackupBlock.id, true)}
+                        onDeleteBackup={onDeleteBackup}
+                        onUpdateAutoBackup={onUpdateAutoBackup}
+                        onBackup={onBackup}
+                        backingUp={backingUp}
+                        backendAvailable={backendAvailable}
+                      />
                     </div>
                   )}
                   {expandedConfigBlocks.length > 0 && (

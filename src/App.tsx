@@ -8,12 +8,13 @@ import RulesPage from './components/RulesPage'
 import { DeviceState } from './DeviceState'
 import {
   fetchBrokers,
+  fetchDeviceSnapshot,
   fetchDeviceSnapshots,
   testCouchDbConnection,
   upsertBroker,
   upsertDeviceSnapshot,
 } from './lib/couchDb'
-import { requestBackup } from './lib/backendClient'
+import { requestBackup, requestDeleteBackup } from './lib/backendClient'
 import { createMqttClient, testMqttConnection } from './lib/mqttClient'
 import {
   defaultSettings,
@@ -46,11 +47,27 @@ function App() {
   const [restarting, setRestarting] = useState<Record<string, boolean>>({})
   const [backingUp, setBackingUp] = useState<Record<string, boolean>>({})
   const [restartTarget, setRestartTarget] = useState<DeviceInfo | null>(null)
+  const [deleteBackupTarget, setDeleteBackupTarget] = useState<{
+    deviceId: string
+    index: number
+  } | null>(null)
   const [powerModalDeviceId, setPowerModalDeviceId] = useState<string | null>(null)
   const [telemetryModalDeviceId, setTelemetryModalDeviceId] = useState<string | null>(null)
   const [rulesDeviceId, setRulesDeviceId] = useState<string | null>(null)
   const [settingsDeviceId, setSettingsDeviceId] = useState<string | null>(null)
   const [consoleLogs, setConsoleLogs] = useState<Record<string, string[]>>({})
+  const [deviceSearch, setDeviceSearch] = useState('')
+  const [deviceFilterFirmware, setDeviceFilterFirmware] = useState('')
+  const [deviceFilterModule, setDeviceFilterModule] = useState('')
+  const [deviceSortBy, setDeviceSortBy] = useState<'name' | 'firmware' | 'module' | 'uptime' | 'online' | 'ip'>('name')
+  const [deviceSortDir, setDeviceSortDir] = useState<'asc' | 'desc'>('asc')
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set())
+  const [bulkProgress, setBulkProgress] = useState<{
+    type: 'backup' | 'restart'
+    current: number
+    total: number
+    deviceName: string
+  } | null>(null)
   const mqttRef = useRef<MqttClient | null>(null)
   const activeBrokerRef = useRef<string | null>(null)
   const devicesRef = useRef<Record<string, DeviceInfo>>({})
@@ -284,12 +301,46 @@ function App() {
 
   // Automatische Abfragen sind deaktiviert; Refresh erfolgt manuell pro Gerät.
 
-  const sortedDevices = useMemo(() => {
+  const baseDevices = useMemo(() => {
     return Object.values(devices)
-      .filter((device) => device.hasRaw)
+      .filter((device) => {
+        if (device.online !== true && device.online !== false) return false
+        if (device.online === false && !device.hasRaw) return false
+        return true
+      })
       .filter((device) => (activeBrokerId ? device.brokerId === activeBrokerId : true))
-      .sort((a, b) => a.name.localeCompare(b.name))
   }, [devices, activeBrokerId])
+
+  const { sortedDevices, uniqueFirmwares, uniqueModules } = useMemo(() => {
+    const search = deviceSearch.trim().toLowerCase()
+    const filtered = baseDevices.filter((device) => {
+      if (search && !device.name.toLowerCase().includes(search) && !device.id.toLowerCase().includes(search)) return false
+      if (deviceFilterFirmware && (device.firmware || '') !== deviceFilterFirmware) return false
+      if (deviceFilterModule && (device.module || '') !== deviceFilterModule) return false
+      return true
+    })
+    const cmp = (a: DeviceInfo, b: DeviceInfo): number => {
+      let va: string | number | boolean | undefined
+      let vb: string | number | boolean | undefined
+      switch (deviceSortBy) {
+        case 'name': va = a.name; vb = b.name; break
+        case 'firmware': va = a.firmware ?? ''; vb = b.firmware ?? ''; break
+        case 'module': va = a.module ?? ''; vb = b.module ?? ''; break
+        case 'uptime': va = a.uptime ?? ''; vb = b.uptime ?? ''; break
+        case 'online': va = a.online === true ? 1 : 0; vb = b.online === true ? 1 : 0; break
+        case 'ip': va = a.ip ?? ''; vb = b.ip ?? ''; break
+        default: va = a.name; vb = b.name
+      }
+      let out = 0
+      if (typeof va === 'number' && typeof vb === 'number') out = va - vb
+      else out = String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' })
+      return deviceSortDir === 'desc' ? -out : out
+    }
+    const sorted = [...filtered].sort(cmp)
+    const firmwares = [...new Set(baseDevices.map((d) => d.firmware || '').filter(Boolean))].sort()
+    const modules = [...new Set(baseDevices.map((d) => d.module || '').filter(Boolean))].sort()
+    return { sortedDevices: sorted, uniqueFirmwares: firmwares, uniqueModules: modules }
+  }, [baseDevices, deviceSearch, deviceFilterFirmware, deviceFilterModule, deviceSortBy, deviceSortDir])
 
   const powerModalDevice = powerModalDeviceId ? devices[powerModalDeviceId] : null
   const telemetryModalDevice = telemetryModalDeviceId ? devices[telemetryModalDeviceId] : null
@@ -309,28 +360,147 @@ function App() {
   const handleBackup = async (deviceId: string) => {
     const device = devicesRef.current[deviceId]
     if (!device?.ip || !backendAvailable) return
+    if (device.online !== true) return
     setBackingUp((prev) => ({ ...prev, [deviceId]: true }))
     try {
-      const info = await requestBackup(undefined, {
+      await requestBackup(undefined, {
         host: device.ip,
         deviceId,
         brokerId: device.brokerId ?? activeBrokerRef.current ?? undefined,
         couchdb: settingsRef.current.couchdb,
       })
-      const days =
-        info.lastTimestamp != null
-          ? Math.floor((Date.now() - new Date(info.lastTimestamp).getTime()) / 86400000)
-          : 0
-      DeviceState.updateInfo(deviceId, {
-        daysSinceBackup: days,
-        backupCount: info.count,
-      })
+      // Backup-Liste aus CouchDB nachziehen, damit die UI sofort aktualisiert wird
+      const snapshot = await fetchDeviceSnapshot(
+        settingsRef.current.couchdb,
+        deviceId,
+        device.brokerId ?? activeBrokerRef.current ?? undefined,
+      )
+      if (snapshot) {
+        DeviceState.hydrateFromSnapshots([snapshot])
+      } else {
+        const info = { count: (device.backupCount ?? 0) + 1, lastTimestamp: new Date().toISOString() }
+        const days = 0
+        DeviceState.updateInfo(deviceId, {
+          daysSinceBackup: days,
+          backupCount: info.count,
+        })
+      }
     } catch (err) {
       console.error('Backup fehlgeschlagen:', err)
       alert(`Backup fehlgeschlagen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`)
     } finally {
       setBackingUp((prev) => ({ ...prev, [deviceId]: false }))
     }
+  }
+
+  const openDeleteBackupDialog = (deviceId: string, index: number) => {
+    const device = devicesRef.current[deviceId]
+    if (!device?.backupItems || index < 0 || index >= device.backupItems.length) return
+    setDeleteBackupTarget({ deviceId, index })
+  }
+
+  const handleUpdateAutoBackup = (deviceId: string, intervalDays: number | null) => {
+    DeviceState.updateInfo(deviceId, { autoBackupIntervalDays: intervalDays })
+  }
+
+  const performDeleteBackup = async () => {
+    if (!deleteBackupTarget) return
+    const { deviceId, index } = deleteBackupTarget
+    const device = devicesRef.current[deviceId]
+    if (!device?.backupItems || index < 0 || index >= device.backupItems.length) {
+      setDeleteBackupTarget(null)
+      return
+    }
+    try {
+      await requestDeleteBackup(undefined, {
+        deviceId,
+        brokerId: device.brokerId ?? activeBrokerRef.current ?? undefined,
+        couchdb: settingsRef.current.couchdb,
+        index,
+      })
+      const nextItems = device.backupItems.filter((_, i) => i !== index)
+      const days =
+        nextItems[0] != null
+          ? Math.floor(
+              (Date.now() - new Date(nextItems[0].createdAt).getTime()) / 86400000,
+            )
+          : null
+      DeviceState.updateInfo(deviceId, {
+        backupItems: nextItems.length > 0 ? nextItems : undefined,
+        backupCount: nextItems.length,
+        daysSinceBackup: days,
+      })
+      setDeleteBackupTarget(null)
+    } catch (err) {
+      console.error('Backup löschen fehlgeschlagen:', err)
+      alert(
+        `Löschen fehlgeschlagen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`,
+      )
+    }
+  }
+
+  const toggleDeviceSelection = (deviceId: string) => {
+    setSelectedDeviceIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(deviceId)) next.delete(deviceId)
+      else next.add(deviceId)
+      return next
+    })
+  }
+
+  const setSelectAllDevices = (checked: boolean, deviceIds: string[]) => {
+    setSelectedDeviceIds(checked ? new Set(deviceIds) : new Set())
+  }
+
+  const handleBulkBackup = async () => {
+    const ids = Array.from(selectedDeviceIds).filter((id) => {
+      const device = devicesRef.current[id]
+      return device?.ip && device?.online === true && backendAvailable
+    })
+    if (ids.length === 0) {
+      if (selectedDeviceIds.size > 0) {
+        alert(
+          'Kein Backup möglich: Alle ausgewählten Geräte haben entweder kein LWT Online, keine IP oder das Backend ist nicht verfügbar.'
+        )
+      }
+      return
+    }
+    setBulkProgress({ type: 'backup', current: 0, total: ids.length, deviceName: '' })
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!
+      const device = devicesRef.current[id]
+      setBulkProgress({
+        type: 'backup',
+        current: i + 1,
+        total: ids.length,
+        deviceName: device?.name ?? id,
+      })
+      await handleBackup(id)
+    }
+    setBulkProgress(null)
+    setSelectedDeviceIds(new Set())
+  }
+
+  const handleBulkRestart = async () => {
+    const ids = Array.from(selectedDeviceIds)
+    if (ids.length === 0) return
+    setBulkProgress({ type: 'restart', current: 0, total: ids.length, deviceName: '' })
+    for (let i = 0; i < ids.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1000))
+      const id = ids[i]!
+      const device = devicesRef.current[id]
+      setBulkProgress({
+        type: 'restart',
+        current: i + 1,
+        total: ids.length,
+        deviceName: device?.name ?? id,
+      })
+      const topic = device?.topic ?? device?.id ?? id
+      mqttRef.current?.publish(`cmnd/${topic}/Restart`, '1')
+      setRestarting((prev) => ({ ...prev, [id]: true }))
+    }
+    setBulkProgress(null)
+    setSelectedDeviceIds(new Set())
   }
 
   const sendPowerToggle = (deviceId: string, channelId: number) => {
@@ -578,7 +748,7 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="border-b border-slate-800 bg-slate-950/90">
-        <div className="mx-auto max-w-6xl px-6 py-4">
+        <div className="mx-auto max-w-7xl px-6 py-4">
           <div className="flex flex-col gap-4 lg:grid lg:grid-cols-3 lg:items-center">
             <div>
               <h1 className="text-2xl font-semibold text-white">TasmotaScope</h1>
@@ -654,7 +824,7 @@ function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-7xl px-6 py-8">
         {settingsDeviceId ? (
           <DeviceSettingsPage
             device={settingsDeviceId ? devices[settingsDeviceId] ?? null : null}
@@ -666,6 +836,11 @@ function App() {
               mqttRef.current.publish(`cmnd/${targetTopic}/${command}`, payload)
             }}
             onTogglePower={sendPowerToggle}
+            onBackup={handleBackup}
+            onDeleteBackup={openDeleteBackupDialog}
+            onUpdateAutoBackup={handleUpdateAutoBackup}
+            backingUp={backingUp}
+            backendAvailable={backendAvailable}
             onBack={() => setSettingsDeviceId(null)}
           />
         ) : rulesDeviceId ? (
@@ -694,9 +869,65 @@ function App() {
           />
         ) : (
           <>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-white">Geräte</h2>
-              <span className="text-sm text-slate-400">{sortedDevices.length} gefunden</span>
+            <div className="mb-4 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">Geräte</h2>
+                <span className="text-sm text-slate-400">{sortedDevices.length} gefunden</span>
+              </div>
+              <div className="flex w-full flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+                <input
+                  type="text"
+                  placeholder="Gerät suchen…"
+                  value={deviceSearch}
+                  onChange={(e) => setDeviceSearch(e.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  aria-label="Gerätename durchsuchen"
+                />
+                <select
+                  value={deviceFilterFirmware}
+                  onChange={(e) => setDeviceFilterFirmware(e.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  aria-label="Nach Firmware filtern"
+                >
+                  <option value="">Alle Firmware</option>
+                  {uniqueFirmwares.map((f) => (
+                    <option key={f} value={f}>{f}</option>
+                  ))}
+                </select>
+                <select
+                  value={deviceFilterModule}
+                  onChange={(e) => setDeviceFilterModule(e.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  aria-label="Nach Modul filtern"
+                >
+                  <option value="">Alle Module</option>
+                  {uniqueModules.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <select
+                  value={deviceSortBy}
+                  onChange={(e) => setDeviceSortBy(e.target.value as typeof deviceSortBy)}
+                  className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  aria-label="Sortierung nach Spalte"
+                >
+                  <option value="name">Gerät</option>
+                  <option value="firmware">Firmware</option>
+                  <option value="module">Modul</option>
+                  <option value="uptime">Uptime</option>
+                  <option value="online">LWT</option>
+                  <option value="ip">IP-Adresse</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setDeviceSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                  className="shrink-0 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 hover:bg-slate-700 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                  title={deviceSortDir === 'asc' ? 'Aufsteigend (A→Z)' : 'Absteigend (Z→A)'}
+                  aria-label={deviceSortDir === 'asc' ? 'Absteigend sortieren' : 'Aufsteigend sortieren'}
+                >
+                  {deviceSortDir === 'asc' ? '↑' : '↓'}
+                </button>
+              </div>
             </div>
             <DeviceList
               devices={sortedDevices}
@@ -720,6 +951,12 @@ function App() {
                 const device = devicesRef.current[deviceId] ?? { id: deviceId, name: deviceId }
                 setRestartTarget(device)
               }}
+              selectedDeviceIds={selectedDeviceIds}
+              onToggleSelection={toggleDeviceSelection}
+              onSelectAll={(checked) => setSelectAllDevices(checked, sortedDevices.map((d) => d.id))}
+              onBulkBackup={handleBulkBackup}
+              onBulkRestart={handleBulkRestart}
+              bulkProgress={bulkProgress}
             />
           </>
         )}
@@ -856,6 +1093,54 @@ function App() {
           </div>
         </div>
       )}
+
+      {deleteBackupTarget && (() => {
+        const device = devices[deleteBackupTarget.deviceId]
+        const item = device?.backupItems?.[deleteBackupTarget.index]
+        const dateStr =
+          item?.createdAt != null
+            ? new Date(item.createdAt).toLocaleString(undefined, {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+            : `${deleteBackupTarget.index + 1}. Backup`
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8"
+            onClick={() => setDeleteBackupTarget(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl bg-slate-900 p-6 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-lg font-semibold text-white">Backup löschen</h3>
+              <p className="mt-2 text-sm text-slate-300">
+                Backup vom <span className="font-medium text-slate-200">{dateStr}</span> wirklich
+                löschen? Diese Aktion kann nicht rückgängig gemacht werden.
+              </p>
+              <div className="mt-6 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setDeleteBackupTarget(null)}
+                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                >
+                  Abbrechen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void performDeleteBackup()}
+                  className="rounded-lg bg-rose-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-rose-400"
+                >
+                  Löschen
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       <ConfigModal
         isOpen={modalOpen}

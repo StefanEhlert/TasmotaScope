@@ -12,6 +12,17 @@ type Props = {
   onBackup?: (deviceId: string) => void
   backingUp?: Record<string, boolean>
   backendAvailable?: boolean
+  selectedDeviceIds?: Set<string>
+  onToggleSelection?: (deviceId: string) => void
+  onSelectAll?: (checked: boolean) => void
+  onBulkBackup?: () => void
+  onBulkRestart?: () => void
+  bulkProgress?: {
+    type: 'backup' | 'restart'
+    current: number
+    total: number
+    deviceName: string
+  } | null
 }
 
 export default function DeviceList({
@@ -26,7 +37,21 @@ export default function DeviceList({
   onBackup,
   backingUp = {},
   backendAvailable = false,
+  selectedDeviceIds,
+  onToggleSelection,
+  onSelectAll,
+  onBulkBackup,
+  onBulkRestart,
+  bulkProgress,
 }: Props) {
+  const bulkEnabled =
+    selectedDeviceIds != null &&
+    onToggleSelection != null &&
+    onSelectAll != null &&
+    onBulkBackup != null &&
+    onBulkRestart != null
+  const selectedCount = selectedDeviceIds?.size ?? 0
+  const hasSelection = selectedCount > 0
   if (devices.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/50 p-8 text-center text-sm text-slate-300">
@@ -37,19 +62,80 @@ export default function DeviceList({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/40">
-      <table className="min-w-full text-left text-sm text-slate-200">
-        <thead className="bg-slate-900/60 text-xs uppercase text-slate-400">
-          <tr>
-            <th className="w-[10rem] px-4 py-3">Gerät</th>
+    <div className="space-y-2">
+      {bulkEnabled && hasSelection && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3">
+          <span className="text-sm text-slate-300">
+            {selectedCount} {selectedCount === 1 ? 'Gerät' : 'Geräte'} ausgewählt
+          </span>
+          {bulkProgress != null ? (
+            <div className="flex flex-1 min-w-0 flex-col gap-1 sm:flex-row sm:items-center">
+              <div className="flex-1 min-w-0">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-700">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                    style={{
+                      width: bulkProgress.total
+                        ? `${(100 * bulkProgress.current) / bulkProgress.total}%`
+                        : '0%',
+                    }}
+                  />
+                </div>
+              </div>
+              <span className="shrink-0 text-xs text-slate-400 sm:text-sm">
+                {bulkProgress.type === 'backup' ? 'Backup' : 'Neustart'} {bulkProgress.current}/
+                {bulkProgress.total}
+                {bulkProgress.deviceName ? ` – ${bulkProgress.deviceName}` : ''}
+              </span>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onBulkBackup}
+                disabled={!backendAvailable}
+                className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!backendAvailable ? 'Backend nicht verfügbar' : 'Backup für ausgewählte Geräte'}
+              >
+                Backup
+              </button>
+              <button
+                type="button"
+                onClick={onBulkRestart}
+                className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-600"
+                title="Neustart für ausgewählte Geräte (ca. 1 s Abstand)"
+              >
+                Neustart
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/40">
+        <table className="min-w-full text-left text-sm text-slate-200">
+          <thead className="bg-slate-900/60 text-xs uppercase text-slate-400">
+            <tr>
+              {bulkEnabled && (
+                <th className="w-10 px-2 py-3">
+                  <input
+                    type="checkbox"
+                    checked={selectedCount === devices.length && devices.length > 0}
+                    onChange={(e) => onSelectAll?.(e.target.checked)}
+                    className="h-3.5 w-3.5 shrink-0 cursor-pointer appearance-none rounded-full border border-slate-600/70 bg-slate-800/50 transition-colors focus:outline-none focus:ring-1 focus:ring-emerald-500/40 focus:ring-offset-1 focus:ring-offset-slate-900 checked:border-emerald-600/70 checked:bg-emerald-500/70"
+                    style={{ WebkitAppearance: 'none', appearance: 'none' }}
+                    aria-label="Alle auswählen"
+                  />
+                </th>
+              )}
+              <th className="w-[10rem] px-4 py-3">Gerät</th>
             <th className="hidden w-[6rem] px-2 py-3 xl:table-cell">Firmware</th>
             <th className="hidden w-12 px-1 py-3 xl:table-cell">Backup</th>
             <th className="hidden px-3 py-3 lg:table-cell">Modul</th>
             <th className="hidden px-4 py-3 md:table-cell">Uptime</th>
             <th className="hidden px-1 py-3 sm:table-cell">LWT</th>
             <th className="hidden px-4 py-3 sm:table-cell">IP-Adresse</th>
-            <th className="px-1 py-3 text-left">Power</th>
-            <th className="w-[9rem] px-4 py-3 text-center">Aktion</th>
+            <th className="min-w-[6rem] px-1 py-3 text-left">Power</th>
+            <th className="min-w-[11rem] w-[11rem] px-4 py-3 text-center">Aktion</th>
           </tr>
         </thead>
         <tbody>
@@ -62,6 +148,18 @@ export default function DeviceList({
                 onOpenSettings?.(device.id)
               }}
             >
+              {bulkEnabled && (
+                <td className="w-10 px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedDeviceIds!.has(device.id)}
+                    onChange={() => onToggleSelection?.(device.id)}
+                    className="h-3.5 w-3.5 shrink-0 cursor-pointer appearance-none rounded-full border border-slate-600/70 bg-slate-800/50 transition-colors focus:outline-none focus:ring-1 focus:ring-emerald-500/40 focus:ring-offset-1 focus:ring-offset-slate-900 checked:border-emerald-600/70 checked:bg-emerald-500/70"
+                    style={{ WebkitAppearance: 'none', appearance: 'none' }}
+                    aria-label={`${device.name} auswählen`}
+                  />
+                </td>
+              )}
               <td className="px-4 py-3 font-medium text-white">
                 <div className="flex items-center gap-2">
                   <span
@@ -98,7 +196,11 @@ export default function DeviceList({
               <td className="hidden px-1 py-3 xl:table-cell">
                 {onBackup ? (
                   (() => {
-                    const canBackup = backendAvailable && device.ip && !backingUp[device.id]
+                    const canBackup =
+                      backendAvailable &&
+                      device.ip &&
+                      device.online === true &&
+                      !backingUp[device.id]
                     const days = device.daysSinceBackup
                     const count = device.backupCount ?? 0
                     const color =
@@ -109,13 +211,15 @@ export default function DeviceList({
                           : 'text-emerald-400'
                     const title = !device.ip
                       ? 'Backup benötigt Gerät-IP'
-                      : !backendAvailable
-                        ? 'Backup benötigt Backend (Docker-Variante)'
-                        : backingUp[device.id]
-                          ? 'Backup läuft…'
-                          : days != null
-                            ? `Letztes Backup vor ${days} Tagen • ${count}/10 gespeichert`
-                            : `Noch kein Backup • ${count}/10 gespeichert`
+                      : device.online !== true
+                        ? 'Backup nur bei LWT Online möglich (sonst Timeout)'
+                        : !backendAvailable
+                          ? 'Backup benötigt Backend (Docker-Variante)'
+                          : backingUp[device.id]
+                            ? 'Backup läuft…'
+                            : days != null
+                              ? `Letztes Backup vor ${days} Tagen • ${count}/10 gespeichert`
+                              : `Noch kein Backup • ${count}/10 gespeichert`
                     return (
                       <div className="flex flex-col items-center gap-1">
                         <button
@@ -320,7 +424,7 @@ export default function DeviceList({
                   })()
                 ) : null}
               </td>
-              <td className="w-[9rem] px-4 py-3 text-right">
+              <td className="min-w-[11rem] w-[11rem] shrink-0 px-4 py-3 text-right">
                 <div className="flex items-center justify-end gap-2">
                   <button
                     type="button"
@@ -418,6 +522,7 @@ export default function DeviceList({
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }

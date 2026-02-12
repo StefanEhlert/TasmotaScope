@@ -67,6 +67,7 @@ export type DeviceSnapshot = {
   }
   raw: Record<string, unknown>
   backups?: DeviceBackups
+  autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi
 }
 
@@ -95,16 +96,19 @@ export async function upsertDeviceSnapshot(
   let rev = deviceRevCache.get(docId)
   let existingBackups: DeviceBackups | undefined
   let existingSettingsUi: DeviceSettingsUi | undefined
+  let existingAutoBackupIntervalDays: number | null | undefined
   const getResponse = await fetch(docPath, { method: 'GET', headers })
   if (getResponse.ok) {
     const existing = (await getResponse.json()) as {
       _rev?: string
       backups?: DeviceBackups
       settingsUi?: DeviceSettingsUi
+      autoBackupIntervalDays?: number | null
     }
     rev = existing._rev
     existingBackups = existing.backups
     existingSettingsUi = existing.settingsUi
+    existingAutoBackupIntervalDays = existing.autoBackupIntervalDays
     if (rev) {
       deviceRevCache.set(docId, rev)
     }
@@ -125,6 +129,13 @@ export async function upsertDeviceSnapshot(
     ...(existingBackups ? { backups: existingBackups } : {}),
     ...((snapshot.settingsUi !== undefined || existingSettingsUi !== undefined)
       ? { settingsUi: snapshot.settingsUi ?? existingSettingsUi }
+      : {}),
+    ...((snapshot.autoBackupIntervalDays !== undefined ||
+      existingAutoBackupIntervalDays !== undefined)
+      ? {
+          autoBackupIntervalDays:
+            snapshot.autoBackupIntervalDays ?? existingAutoBackupIntervalDays ?? null,
+        }
       : {}),
   }
 
@@ -177,6 +188,34 @@ export async function upsertDeviceSnapshot(
     deviceRevCache.set(docId, retryResult.rev)
   }
   knownDeviceDocs.add(docId)
+}
+
+/** Fetches a single device document from CouchDB (e.g. to refresh backup list after backup). */
+export async function fetchDeviceSnapshot(
+  settings: CouchDbSettings,
+  deviceId: string,
+  brokerId?: string,
+): Promise<DeviceSnapshot | null> {
+  const broker = normalizeBrokerId(brokerId)
+  const docId = `device:${broker}:${deviceId}`
+  const baseUrl = buildCouchDbBaseUrl(settings)
+  const headers = {
+    Authorization: buildBasicAuthHeader(settings),
+  }
+  const dbName = encodeURIComponent(settings.database)
+  const docPath = `${baseUrl}/${dbName}/${encodeURIComponent(docId)}`
+  const response = await fetch(docPath, { method: 'GET', headers })
+  if (!response.ok) {
+    if (response.status === 404) return null
+    const detail = await response.text()
+    throw new Error(`CouchDB-Gerät lesen fehlgeschlagen: ${detail}`)
+  }
+  const doc = (await response.json()) as DeviceSnapshot & { _id?: string; _rev?: string }
+  if (doc._rev) {
+    deviceRevCache.set(docId, doc._rev)
+  }
+  knownDeviceDocs.add(docId)
+  return doc as DeviceSnapshot
 }
 
 export async function fetchDeviceSnapshots(

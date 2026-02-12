@@ -32,6 +32,7 @@ type PersistSnapshot = {
     signal?: number
   }
   raw: Record<string, unknown>
+  autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi
 }
 
@@ -106,6 +107,10 @@ const asString = (value: unknown): string | undefined => {
 const mergeInfo = (current: DeviceInfo, patch: Partial<DeviceInfo>): DeviceInfo => {
   const next: DeviceInfo = { ...current }
   Object.entries(patch).forEach(([key, value]) => {
+    if (key === 'autoBackupIntervalDays') {
+      ;(next as Record<string, unknown>)[key] = value ?? null
+      return
+    }
     if (value === undefined || value === null || value === '') {
       return
     }
@@ -566,6 +571,7 @@ const buildSnapshot = (record: DeviceRecord): PersistSnapshot => ({
     signal: record.info.signal,
   },
   raw: record.raw,
+  autoBackupIntervalDays: record.info.autoBackupIntervalDays,
   settingsUi: record.info.settingsUi,
 })
 
@@ -726,6 +732,7 @@ export const DeviceState = {
       }
       raw?: Record<string, unknown>
       backups?: { count: number; lastAt: string | null; items?: unknown[] }
+      autoBackupIntervalDays?: number | null
       settingsUi?: DeviceSettingsUi
     }>,
   ) {
@@ -737,6 +744,15 @@ export const DeviceState = {
           ? Math.floor((Date.now() - new Date(backups.lastAt).getTime()) / 86400000)
           : null
       const backupCount = backups?.count ?? 0
+      const backupItems = (backups?.items ?? [])
+        .filter(
+          (item): item is { createdAt: string; data: string } =>
+            item != null &&
+            typeof item === 'object' &&
+            typeof (item as { createdAt?: unknown }).createdAt === 'string' &&
+            typeof (item as { data?: unknown }).data === 'string',
+        )
+        .map((item) => ({ createdAt: item.createdAt, data: item.data }))
       record.info = {
         ...record.info,
         name: snapshot.fields.name || record.info.name,
@@ -752,6 +768,9 @@ export const DeviceState = {
         hasRaw: Boolean(snapshot.raw && Object.keys(snapshot.raw).length > 0),
         daysSinceBackup,
         backupCount,
+        backupItems: backupItems.length > 0 ? backupItems : undefined,
+        autoBackupIntervalDays:
+          snapshot.autoBackupIntervalDays ?? record.info.autoBackupIntervalDays ?? undefined,
         settingsUi: snapshot.settingsUi ?? record.info.settingsUi,
       }
       record.raw = snapshot.raw ?? {}

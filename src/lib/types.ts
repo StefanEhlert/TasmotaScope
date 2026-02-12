@@ -55,6 +55,10 @@ export type DeviceInfo = {
   hasRaw?: boolean
   daysSinceBackup?: number | null
   backupCount?: number
+  /** Gespeicherte Backups (von CouchDB): Datum + Base64-Daten für Download. */
+  backupItems?: { createdAt: string; data: string }[]
+  /** Automatisches Backup: Intervall in Tagen (null/undefined = aus). */
+  autoBackupIntervalDays?: number | null
   /** Gespeicherter Zustand der Einstellungsseite (Konsole + Bereiche). */
   settingsUi?: DeviceSettingsUi
 }
