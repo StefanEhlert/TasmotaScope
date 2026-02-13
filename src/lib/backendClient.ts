@@ -10,7 +10,8 @@ const SSE_BASE =
 
 export function getDevicesStreamUrl(): string {
   const base = SSE_BASE || BACKEND_BASE
-  return `${base.replace(/\/$/, '')}/api/devices/stream`
+  const path = SSE_BASE ? '/api/devices/stream' : '/devices/stream'
+  return `${base.replace(/\/$/, '')}${path}`
 }
 
 export type BackupInfo = {
