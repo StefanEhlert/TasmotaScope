@@ -62,7 +62,7 @@ backupRouter.get('/health', (_req, res) => {
 export async function performBackup(
   couchdb: CouchDbSettings,
   params: { host: string; deviceId: string; brokerId?: string },
-): Promise<{ lastTimestamp: string | null; count: number }> {
+): Promise<{ lastTimestamp: string | null; count: number; items: DeviceBackupItem[] }> {
   const { host, deviceId, brokerId } = params
   const tasmotaUrl = `http://${host.replace(/^https?:\/\//, '')}/dl`
   const response = await fetch(tasmotaUrl, {
@@ -160,7 +160,7 @@ backupRouter.post('/backup', async (req, res) => {
     if (store) {
       store.updateInfo(deviceId, {
         backupCount: result.count,
-        backupItems: result.items.map((item) => ({ createdAt: item.createdAt, data: item.data })),
+        backupItems: result.items.map((item: DeviceBackupItem) => ({ createdAt: item.createdAt, data: item.data })),
         daysSinceBackup: 0,
       })
     }
@@ -247,7 +247,7 @@ backupRouter.post('/backup/delete', async (req, res) => {
     if (store) {
       store.updateInfo(deviceId, {
         backupCount: backups.count,
-        backupItems: backups.items.map((item) => ({ createdAt: item.createdAt, data: item.data })),
+        backupItems: backups.items.map((item: DeviceBackupItem) => ({ createdAt: item.createdAt, data: item.data })),
         daysSinceBackup: backups.items[0]?.createdAt
           ? Math.floor((Date.now() - new Date(backups.items[0].createdAt).getTime()) / 86400000)
           : undefined,
