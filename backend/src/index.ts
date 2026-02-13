@@ -95,8 +95,9 @@ function devicesWithConsole(): Record<string, Record<string, unknown>> {
   const out: Record<string, Record<string, unknown>> = {}
   for (const [id, info] of Object.entries(snapshot)) {
     const record = map.get(id)
+    const base = typeof info === 'object' && info !== null ? { ...info } : {}
     out[id] = {
-      ...info,
+      ...base,
       console: consoles[id] ?? [],
       ...(record ? { raw: record.raw, rules: record.rules } : {}),
     }

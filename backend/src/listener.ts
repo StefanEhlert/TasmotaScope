@@ -4,7 +4,7 @@
  */
 
 import mqtt, { type MqttClient } from 'mqtt'
-import { createDeviceStore } from 'tasmotascope-shared'
+import { createDeviceStore, type PersistSnapshot } from 'tasmotascope-shared'
 import {
   fetchBrokers,
   fetchDeviceSnapshots,
@@ -60,7 +60,7 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
   currentCouchDb = couchdb
   store = createDeviceStore()
 
-  store.setPersistFn((snapshot) => {
+  store.setPersistFn((snapshot: PersistSnapshot) => {
     if (!currentCouchDb) return Promise.resolve()
     return upsertDeviceSnapshot(currentCouchDb, snapshot)
   })
@@ -93,7 +93,7 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
     console.error('[Listener] Rehydration fehlgeschlagen:', err)
   }
 
-  store.setCommandSender((deviceId, topic, payload) => {
+  store.setCommandSender((deviceId: string, topic: string, payload: string) => {
     const device = store!.getDevice(deviceId)
     const brokerId = device?.brokerId
     if (!brokerId) return
