@@ -503,6 +503,12 @@ function App() {
     setSelectedDeviceIds(new Set())
   }
 
+  const handleBulkSetAutoBackup = (days: number) => {
+    const ids = Array.from(selectedDeviceIds ?? [])
+    const interval = days === 0 ? null : Math.max(1, Math.min(365, days))
+    ids.forEach((deviceId) => handleUpdateAutoBackup(deviceId, interval))
+  }
+
   const sendPowerToggle = (deviceId: string, channelId: number) => {
     const device = devicesRef.current[deviceId]
     if (!device || !mqttRef.current?.connected) {
@@ -956,6 +962,7 @@ function App() {
               onSelectAll={(checked) => setSelectAllDevices(checked, sortedDevices.map((d) => d.id))}
               onBulkBackup={handleBulkBackup}
               onBulkRestart={handleBulkRestart}
+              onBulkSetAutoBackup={handleBulkSetAutoBackup}
               bulkProgress={bulkProgress}
             />
           </>

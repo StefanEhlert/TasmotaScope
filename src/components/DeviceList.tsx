@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import type { DeviceInfo } from '../lib/types'
+
+const DEFAULT_BULK_AUTO_BACKUP_DAYS = 100
 
 type Props = {
   devices: DeviceInfo[]
@@ -17,6 +20,7 @@ type Props = {
   onSelectAll?: (checked: boolean) => void
   onBulkBackup?: () => void
   onBulkRestart?: () => void
+  onBulkSetAutoBackup?: (days: number) => void
   bulkProgress?: {
     type: 'backup' | 'restart'
     current: number
@@ -42,8 +46,10 @@ export default function DeviceList({
   onSelectAll,
   onBulkBackup,
   onBulkRestart,
+  onBulkSetAutoBackup,
   bulkProgress,
 }: Props) {
+  const [bulkAutoBackupDays, setBulkAutoBackupDays] = useState(DEFAULT_BULK_AUTO_BACKUP_DAYS)
   const bulkEnabled =
     selectedDeviceIds != null &&
     onToggleSelection != null &&
@@ -107,6 +113,43 @@ export default function DeviceList({
               >
                 Neustart
               </button>
+              {onBulkSetAutoBackup && (
+                <div className="flex overflow-hidden rounded-lg border border-slate-600 bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => onBulkSetAutoBackup(bulkAutoBackupDays)}
+                    className="flex items-center rounded-l-lg border-r border-slate-600 bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-600"
+                    title="Automatisches Backup für ausgewählte Geräte (0 = deaktivieren)"
+                  >
+                    Auto-Backup bei{' '}
+                  </button>
+                  <label htmlFor="bulk-auto-backup-days" className="sr-only">
+                    Anzahl Tage
+                  </label>
+                  <input
+                    id="bulk-auto-backup-days"
+                    type="number"
+                    min={0}
+                    max={365}
+                    value={bulkAutoBackupDays}
+                    onChange={(e) =>
+                      setBulkAutoBackupDays(
+                        Math.max(0, Math.min(365, Number(e.target.value) || 0)),
+                      )
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') onBulkSetAutoBackup(bulkAutoBackupDays)
+                    }}
+                    className="w-14 border-0 bg-transparent px-2 py-1.5 text-sm text-slate-200 focus:outline-none focus:ring-0"
+                  />
+                  <span
+                    className="flex items-center border-l border-slate-600 px-3 py-1.5 text-sm text-slate-400"
+                    aria-hidden
+                  >
+                    Tagen
+                  </span>
+                </div>
+              )}
             </>
           )}
         </div>
