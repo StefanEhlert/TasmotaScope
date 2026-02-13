@@ -65,7 +65,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
   const lastInputTimeRef = useRef<number>(0) // Track timing of inputs
   const isUserEditingRef = useRef(false) // Flag to prevent structure updates during user input
   const lastUserInputTimeRef = useRef<number>(0) // Track when user last typed
-  const editingTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Timeout for clearing editing flag
+  const editingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null) // Timeout for clearing editing flag
   const [showSaveModal, setShowSaveModal] = useState(false)
   const [showLoadModal, setShowLoadModal] = useState(false)
 

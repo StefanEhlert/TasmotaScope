@@ -6,12 +6,11 @@ const ACTIVE_BROKER_KEY = 'tasmotascope.activeBrokerId'
 export const defaultSettings: AppSettings = {
   mqtt: {
     host: '',
-    port: 9001,
+    port: 1883,
     useTls: false,
     username: '',
     password: '',
     clientId: '',
-    path: '/',
   },
   couchdb: {
     host: '',
