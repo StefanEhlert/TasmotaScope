@@ -5,7 +5,6 @@ export type MqttSettings = {
   username: string
   password: string
   clientId?: string
-  path: string
 }
 
 export type CouchDbSettings = {

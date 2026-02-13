@@ -8,16 +8,16 @@ type Props = {
   onClose: () => void
   onSelect: (id: string) => void
   onSave: (broker: BrokerConfig) => Promise<void>
+  onDelete?: (brokerId: string) => Promise<void>
 }
 
 const blankMqtt: MqttSettings = {
   host: '',
-  port: 9001,
+  port: 1883,
   useTls: false,
   username: '',
   password: '',
   clientId: '',
-  path: '/',
 }
 
 const toNumber = (value: string) => (value ? Number(value) : 0)
@@ -29,11 +29,13 @@ export default function BrokerModal({
   onClose,
   onSelect,
   onSave,
+  onDelete,
 }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [mqtt, setMqtt] = useState<MqttSettings>(blankMqtt)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     if (!isOpen) {
@@ -47,7 +49,13 @@ export default function BrokerModal({
     const selected = brokers.find((broker) => broker.id === editingId)
     if (selected) {
       setName(selected.name)
-      setMqtt(selected.mqtt)
+      const raw = selected.mqtt
+      setMqtt({
+        ...blankMqtt,
+        ...raw,
+        host: typeof raw.host === 'string' ? raw.host : '',
+        port: typeof raw.port === 'number' && Number.isFinite(raw.port) ? raw.port : Number(raw.port) || 1883,
+      })
     }
   }, [brokers, editingId, isOpen])
 
@@ -55,8 +63,12 @@ export default function BrokerModal({
     return null
   }
 
-  const mqttValid = Boolean(mqtt.host.trim()) && Number.isFinite(mqtt.port) && mqtt.port > 0
-  const nameValid = Boolean(name.trim())
+  const portNum = Number(mqtt.port)
+  const mqttValid =
+    Boolean(typeof mqtt.host === 'string' && mqtt.host.trim()) &&
+    !Number.isNaN(portNum) &&
+    portNum > 0
+  const nameValid = Boolean(typeof name === 'string' && name.trim())
 
   const startNew = () => {
     setEditingId(null)
@@ -70,13 +82,14 @@ export default function BrokerModal({
     }
     setSaving(true)
     const id = editingId ?? crypto.randomUUID()
+    const portNum = Number(mqtt.port)
     await onSave({
       id,
       name: name.trim(),
       mqtt: {
         ...mqtt,
-        host: mqtt.host.trim(),
-        path: mqtt.path?.trim() ? mqtt.path.trim() : '/',
+        host: typeof mqtt.host === 'string' ? mqtt.host.trim() : '',
+        port: !Number.isNaN(portNum) && portNum > 0 ? portNum : 1883,
       },
     })
     setEditingId(id)
@@ -165,7 +178,7 @@ export default function BrokerModal({
                 />
               </label>
               <label className="block text-xs text-slate-300">
-                Port
+                Port (TCP, Backend)
                 <input
                   value={mqtt.port}
                   onChange={(event) =>
@@ -173,16 +186,7 @@ export default function BrokerModal({
                   }
                   type="number"
                   className="mt-1 w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-                  placeholder="9001"
-                />
-              </label>
-              <label className="block text-xs text-slate-300">
-                WebSocket-Pfad
-                <input
-                  value={mqtt.path}
-                  onChange={(event) => setMqtt((prev) => ({ ...prev, path: event.target.value }))}
-                  className="mt-1 w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-                  placeholder="/"
+                  placeholder="1883"
                 />
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300">
@@ -223,7 +227,34 @@ export default function BrokerModal({
               </label>
             </div>
 
-            <div className="mt-6 flex items-center justify-end gap-3">
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <div>
+                {editingId && onDelete && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!confirm(`Broker „${name || editingId}“ und alle zugehörigen Geräte in CouchDB löschen?`)) return
+                      setDeleting(true)
+                      try {
+                        await onDelete(editingId)
+                        setEditingId(null)
+                        setName('')
+                        setMqtt(blankMqtt)
+                      } finally {
+                        setDeleting(false)
+                      }
+                    }}
+                    disabled={deleting}
+                    className="rounded-lg border border-rose-700 bg-rose-500/20 p-2 text-rose-200 hover:bg-rose-500/30 disabled:opacity-50"
+                    title="Broker löschen (inkl. Geräte in CouchDB)"
+                    aria-label="Broker löschen"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={handleSave}

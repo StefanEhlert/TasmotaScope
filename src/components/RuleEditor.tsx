@@ -16,6 +16,8 @@ import TemplateLoadModal from './TemplateLoadModal'
 type Props = {
   value: string
   onChange: (value: string) => void
+  /** Nur bei echter Benutzereingabe (nicht bei initialem Laden/Strukturieren). Für „ungespeichert“-Dialog. */
+  onUserChange?: (value: string) => void
   placeholder?: string
   className?: string
   onHeightChange?: () => void
@@ -37,6 +39,7 @@ export type RuleEditorRef = {
 const RuleEditor = forwardRef<RuleEditorRef, Props>(({
   value,
   onChange,
+  onUserChange,
   placeholder,
   className = '',
   onHeightChange,
@@ -190,6 +193,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
       
       if (structuredText !== value) {
         onChange(structuredText)
+        // Nicht onUserChange – das ist nur Strukturierung beim Laden, keine Benutzereingabe
       }
     }
   }, [value, onChange, enabled, showSuggestions])
@@ -490,6 +494,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
       
       plainValueRef.current = newText
       onChange(newText)
+      onUserChange?.(newText)
       
       // Update highlighting
       if (highlightRef.current) {
@@ -534,6 +539,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     
     plainValueRef.current = newText
     onChange(newText)
+    onUserChange?.(newText)
     
     // Update highlighting
     if (highlightRef.current) {
@@ -599,6 +605,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
       // User is typing very fast, let browser handle it naturally
       plainValueRef.current = newValue
       onChange(newValue)
+      onUserChange?.(newValue)
       
       // Update highlighting
       if (highlightRef.current) {
@@ -668,6 +675,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
           
           // Trigger onChange (this will cause React to re-render)
           onChange(newValue)
+          onUserChange?.(newValue)
           
           // Set cursor position immediately to prevent race conditions
           // Use requestAnimationFrame to ensure DOM is ready, but do it synchronously
@@ -729,6 +737,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
       
       // Send plain text to parent (no transformation)
       onChange(newValue)
+      onUserChange?.(newValue)
       
       // Restore position immediately (synchronously) to prevent React from resetting it
       // This is critical for both insertions and deletions when typing fast
@@ -929,6 +938,7 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     
     // Call onChange to update parent
     onChange(newText)
+    onUserChange?.(newText)
     
     // Update textarea value and focus
     if (textarea) {

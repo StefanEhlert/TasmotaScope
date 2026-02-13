@@ -466,14 +466,14 @@ export default function RulesPage({
                       deviceId={device?.id}
                       brokerId={device?.brokerId}
                       onChange={(text) => {
-                        // Mark rule as being edited in DeviceState
+                        onRuleUpdate(rule, { text })
+                      }}
+                      onUserChange={(text) => {
                         if (device) {
                           DeviceState.setRuleEditing(device.id, rule, true)
                         }
                         setEditingRules((prev) => ({ ...prev, [rule]: true }))
-                        onRuleUpdate(rule, {
-                          text,
-                        })
+                        onRuleUpdate(rule, { text })
                       }}
                       ref={(editor) => {
                         // Store reference to textarea and insertTemplate method for template insertion

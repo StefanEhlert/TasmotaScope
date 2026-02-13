@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MqttClient } from 'mqtt'
 import BrokerModal from './components/BrokerModal'
 import ConfigModal, { type ConnectionResult } from './components/ConfigModal'
 import DeviceList from './components/DeviceList'
 import DeviceSettingsPage from './components/DeviceSettingsPage'
 import RulesPage from './components/RulesPage'
 import { DeviceState } from './DeviceState'
+import { fetchDeviceSnapshot, upsertDeviceSnapshot } from './lib/couchDb'
 import {
-  fetchBrokers,
-  fetchDeviceSnapshot,
-  fetchDeviceSnapshots,
-  testCouchDbConnection,
-  upsertBroker,
-  upsertDeviceSnapshot,
-} from './lib/couchDb'
-import { requestBackup, requestDeleteBackup } from './lib/backendClient'
-import { createMqttClient, testMqttConnection } from './lib/mqttClient'
+  deleteBroker,
+  fetchBrokersFromBackend,
+  fetchDevicesFromBackend,
+  getBackendStatus,
+  getDevicesStreamUrl,
+  postBroker,
+  postCouchDbConfig,
+  putBroker,
+  requestBackup,
+  requestDeleteBackup,
+  sendCommand,
+} from './lib/backendClient'
+import { subscribeSSE } from './lib/sseStream'
+import { apiDevicesToHydrateSnapshots } from './lib/deviceSync'
 import {
   defaultSettings,
   loadActiveBrokerId,
@@ -23,15 +28,15 @@ import {
   saveActiveBrokerId,
   saveSettings,
 } from './lib/storage'
-import type { AppSettings, BrokerConfig, DeviceInfo, MqttSettings } from './lib/types'
+import type { AppSettings, BrokerConfig, DeviceInfo } from './lib/types'
 import { useBackendAvailable } from './hooks/useBackendAvailable'
 
 type ConnectionState = 'idle' | 'checking' | 'ok' | 'error'
 
-const topics = ['#']
 const STALE_DEVICE_MS = 5 * 60 * 1000
 function App() {
-  const [settings, setSettings] = useState<AppSettings>(defaultSettings)
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings() ?? defaultSettings)
+  const [configCheckDone, setConfigCheckDone] = useState(false)
   const [modalOpen, setModalOpen] = useState(true)
   const [forceModal, setForceModal] = useState(true)
   const [brokerModalOpen, setBrokerModalOpen] = useState(false)
@@ -53,9 +58,11 @@ function App() {
   } | null>(null)
   const [powerModalDeviceId, setPowerModalDeviceId] = useState<string | null>(null)
   const [telemetryModalDeviceId, setTelemetryModalDeviceId] = useState<string | null>(null)
+  const [telemetryAnchorRect, setTelemetryAnchorRect] = useState<DOMRect | null>(null)
   const [rulesDeviceId, setRulesDeviceId] = useState<string | null>(null)
   const [settingsDeviceId, setSettingsDeviceId] = useState<string | null>(null)
-  const [consoleLogs, setConsoleLogs] = useState<Record<string, string[]>>({})
+  /** Letzte Geräte-Antwort vom Backend (inkl. console pro Gerät). */
+  const [lastApiDevices, setLastApiDevices] = useState<Record<string, Record<string, unknown>>>({})
   const [deviceSearch, setDeviceSearch] = useState('')
   const [deviceFilterFirmware, setDeviceFilterFirmware] = useState('')
   const [deviceFilterModule, setDeviceFilterModule] = useState('')
@@ -68,35 +75,62 @@ function App() {
     total: number
     deviceName: string
   } | null>(null)
-  const mqttRef = useRef<MqttClient | null>(null)
   const activeBrokerRef = useRef<string | null>(null)
   const devicesRef = useRef<Record<string, DeviceInfo>>({})
   const restartingRef = useRef<Record<string, boolean>>({})
   
   
   const { available: backendAvailable } = useBackendAvailable()
-  const lastCouchCheckRef = useRef<string | null>(null)
   const couchStateRef = useRef<ConnectionState>('idle')
   const settingsRef = useRef<AppSettings>(defaultSettings)
-  const lastSnapshotLoadRef = useRef<string | null>(null)
   const lastRulesLoadRef = useRef<string | null>(null)
   const lastSettingsWebButtonRequestRef = useRef<string | null>(null)
 
   useEffect(() => {
-    const stored = loadSettings()
-    if (!stored) {
-      setForceModal(true)
-      setModalOpen(true)
-      return
-    }
-    setSettings(stored)
-    void validateAndConnect(stored, true)
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      mqttRef.current?.end(true)
-    }
+    let cancelled = false
+    void (async () => {
+      let status = await getBackendStatus()
+      if (cancelled) return
+      if (!status) {
+        setCouchState('error')
+        setForceModal(true)
+        setModalOpen(true)
+        setConfigCheckDone(true)
+        return
+      }
+      if (!status.couchdb) {
+        const stored = loadSettings()
+        const couch = stored?.couchdb
+        if (couch?.host?.trim() && couch?.database?.trim()) {
+          try {
+            await postCouchDbConfig(undefined, couch)
+            status = await getBackendStatus()
+          } catch {
+            // gespeicherte Config ungültig oder Backend-Fehler
+          }
+        }
+        if (cancelled) return
+        if (!status?.couchdb) {
+          setCouchState('error')
+          setForceModal(true)
+          setModalOpen(true)
+          setConfigCheckDone(true)
+          return
+        }
+      }
+      setCouchState('ok')
+      setModalOpen(false)
+      setForceModal(false)
+      try {
+        const list = await fetchBrokersFromBackend()
+        if (!cancelled) setBrokers(list)
+        if (!cancelled && list.length === 0) setBrokerModalOpen(true)
+      } catch {
+        if (!cancelled) setBrokers([])
+      }
+      if (!cancelled) setConfigCheckDone(true)
+    })()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -145,6 +179,17 @@ function App() {
     }
   }, [activeBrokerId])
 
+  // Bei Broker-Wechsel zurück zur Geräteliste (Detail-Ansichten schließen)
+  useEffect(() => {
+    setRulesDeviceId(null)
+    setSettingsDeviceId(null)
+    setPowerModalDeviceId(null)
+    setTelemetryModalDeviceId(null)
+    setTelemetryAnchorRect(null)
+    setRestartTarget(null)
+    setDeleteBackupTarget(null)
+  }, [activeBrokerId])
+
   useEffect(() => {
     couchStateRef.current = couchState
   }, [couchState])
@@ -154,11 +199,8 @@ function App() {
   }, [settings])
 
   useEffect(() => {
-    DeviceState.setCommandSender((_, topic, payload) => {
-      if (!mqttRef.current?.connected) {
-        return
-      }
-      mqttRef.current.publish(topic, payload)
+    DeviceState.setCommandSender((deviceId, topic, payload) => {
+      void sendCommand(undefined, deviceId, topic, payload).catch(() => {})
     })
     DeviceState.setPersistFn((snapshot) => {
       return upsertDeviceSnapshot(settingsRef.current.couchdb, snapshot)
@@ -166,89 +208,54 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (couchState !== 'ok') {
-      return
-    }
-    const couch = settings.couchdb
-    const key = `${couch.host}|${couch.port}|${couch.username}|${couch.database}|${couch.useTls}|${activeBrokerId ?? ''}`
-    if (lastSnapshotLoadRef.current === key) {
-      return
-    }
-    lastSnapshotLoadRef.current = key
-    void (async () => {
-      try {
-        let snapshots = await fetchDeviceSnapshots(couch)
-        if (snapshots.length > 0) {
-          if (activeBrokerId) {
-            snapshots = snapshots.map((snapshot) =>
-              snapshot.brokerId && snapshot.brokerId !== 'default'
-                ? snapshot
-                : { ...snapshot, brokerId: activeBrokerId },
-            )
-          }
-          DeviceState.hydrateFromSnapshots(snapshots)
-        }
-      } catch (error) {
-        console.error('CouchDB Laden fehlgeschlagen', error)
-      }
-    })()
-  }, [couchState, settings, activeBrokerId])
+    if (couchState !== 'ok') return
+    let cancelled = false
+    let abortController: AbortController | null = null
+    let pollInterval: ReturnType<typeof setInterval> | null = null
 
-  useEffect(() => {
-    if (couchState !== 'ok') {
-      return
+    const apply = (data: Record<string, unknown>) => {
+      if (cancelled) return
+      const asRecord = data as Record<string, Record<string, unknown>>
+      setLastApiDevices(asRecord)
+      const snapshots = apiDevicesToHydrateSnapshots(asRecord)
+      if (snapshots.length > 0) DeviceState.hydrateFromSnapshots(snapshots)
+      setDevices(DeviceState.getSnapshot())
     }
-    void (async () => {
-      try {
-        let fetched = await fetchBrokers(settings.couchdb)
-        if (fetched.length === 0 && settings.mqtt.host) {
-          const defaultBroker: BrokerConfig = {
-            id: crypto.randomUUID(),
-            name: 'Default Broker',
-            mqtt: { ...settings.mqtt },
-          }
-          await upsertBroker(settings.couchdb, defaultBroker)
-          fetched = [defaultBroker]
-        }
-        setBrokers(fetched)
-        if (fetched.length > 0) {
-          const existing = fetched.find((broker) => broker.id === activeBrokerId)
-          const nextId = existing ? existing.id : fetched[0].id
-          setActiveBrokerId(nextId)
-        }
-      } catch (error) {
-        console.error('CouchDB Broker laden fehlgeschlagen', error)
-      }
-    })()
-  }, [couchState, settings])
 
-  useEffect(() => {
-    const couch = settings.couchdb
-    const isConfigured =
-      Boolean(couch.host?.trim()) &&
-      Boolean(couch.username?.trim()) &&
-      Boolean(couch.password?.trim()) &&
-      Boolean(couch.database?.trim()) &&
-      Number.isFinite(couch.port) &&
-      couch.port > 0
-    if (!isConfigured || couchState !== 'idle') {
-      return
-    }
-    const key = `${couch.host}|${couch.port}|${couch.username}|${couch.database}|${couch.useTls}`
-    if (lastCouchCheckRef.current === key) {
-      return
-    }
-    lastCouchCheckRef.current = key
-    void (async () => {
-      setCouchState('checking')
-      try {
-        await testCouchDbConnection(couch)
-        setCouchState('ok')
-      } catch {
-        setCouchState('error')
+    const runStream = async () => {
+      while (!cancelled) {
+        abortController = new AbortController()
+        try {
+          await subscribeSSE({
+            url: getDevicesStreamUrl(),
+            onMessage: apply,
+            signal: abortController.signal,
+          })
+        } catch (err) {
+          if ((err as { name?: string }).name !== 'AbortError' && !cancelled) {
+            console.warn('[SSE] Stream unterbrochen, Reconnect in 2s', err)
+          }
+        }
+        if (cancelled) break
+        await new Promise((r) => setTimeout(r, 2000))
       }
-    })()
-  }, [couchState, settings])
+    }
+
+    void fetchDevicesFromBackend().then(apply)
+    void runStream()
+
+    const POLL_MS = 15000
+    pollInterval = setInterval(() => {
+      if (cancelled) return
+      void fetchDevicesFromBackend().then(apply)
+    }, POLL_MS)
+
+    return () => {
+      cancelled = true
+      abortController?.abort()
+      if (pollInterval) clearInterval(pollInterval)
+    }
+  }, [couchState])
 
   useEffect(() => {
     if (!rulesDeviceId) {
@@ -256,21 +263,16 @@ function App() {
       return
     }
     const device = devices[rulesDeviceId]
-    if (!device || !mqttRef.current?.connected) {
-      return
-    }
-    // Only load if this is a different device or if we haven't loaded yet
-    if (lastRulesLoadRef.current === rulesDeviceId) {
-      return
-    }
+    if (!device) return
+    if (lastRulesLoadRef.current === rulesDeviceId) return
     lastRulesLoadRef.current = rulesDeviceId
     const targetTopic = device.topic || device.id
     ;[1, 2, 3].forEach((ruleId) => {
-      mqttRef.current?.publish(`cmnd/${targetTopic}/RULE${ruleId}`, '')
+      void sendCommand(undefined, rulesDeviceId, `cmnd/${targetTopic}/RULE${ruleId}`, '').catch(() => {})
     })
-    mqttRef.current?.publish(`cmnd/${targetTopic}/VAR`, '')
-    mqttRef.current?.publish(`cmnd/${targetTopic}/MEM`, '')
-    mqttRef.current?.publish(`cmnd/${targetTopic}/RULETIMER`, '')
+    void sendCommand(undefined, rulesDeviceId, `cmnd/${targetTopic}/VAR`, '').catch(() => {})
+    void sendCommand(undefined, rulesDeviceId, `cmnd/${targetTopic}/MEM`, '').catch(() => {})
+    void sendCommand(undefined, rulesDeviceId, `cmnd/${targetTopic}/RULETIMER`, '').catch(() => {})
   }, [rulesDeviceId, devices])
 
   useEffect(() => {
@@ -279,25 +281,30 @@ function App() {
       return
     }
     const device = devices[settingsDeviceId]
-    if (!device?.powerChannels?.length || !mqttRef.current?.connected) {
-      return
-    }
+    if (!device?.powerChannels?.length) return
     const needsLabels = device.powerChannels.some((ch) => !ch.label?.trim())
-    if (!needsLabels || lastSettingsWebButtonRequestRef.current === settingsDeviceId) {
-      return
-    }
+    if (!needsLabels || lastSettingsWebButtonRequestRef.current === settingsDeviceId) return
     lastSettingsWebButtonRequestRef.current = settingsDeviceId
     const targetTopic = device.topic || device.id
-    mqttRef.current.publish(`cmnd/${targetTopic}/STATUS`, '5')
+    void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/STATUS`, '5').catch(() => {})
   }, [settingsDeviceId, devices])
 
   useEffect(() => {
-    const broker = brokers.find((item) => item.id === activeBrokerId)
-    if (!broker) {
-      return
+    if (!activeBrokerId || !configCheckDone) return
+    let cancelled = false
+    const update = async () => {
+      const status = await getBackendStatus()
+      if (cancelled || !status) return
+      const state = status.brokers[activeBrokerId] === 'connected' ? 'ok' : activeBrokerId ? 'error' : 'idle'
+      setMqttState(state)
     }
-    connectMqttLive(broker.mqtt)
-  }, [activeBrokerId, brokers])
+    void update()
+    const t = window.setInterval(update, 10_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [activeBrokerId, configCheckDone])
 
   // Automatische Abfragen sind deaktiviert; Refresh erfolgt manuell pro Gerät.
 
@@ -345,17 +352,6 @@ function App() {
   const powerModalDevice = powerModalDeviceId ? devices[powerModalDeviceId] : null
   const telemetryModalDevice = telemetryModalDeviceId ? devices[telemetryModalDeviceId] : null
   const rulesDevice = rulesDeviceId ? devices[rulesDeviceId] : null
-
-  const appendConsoleLine = (deviceId: string, topic: string, payload: string) => {
-    const time = new Date().toLocaleTimeString('de-DE', { hour12: false })
-    const entry = `[${time}] ${topic} ${payload}`
-    setConsoleLogs((prev) => {
-      const existing = prev[deviceId] ?? []
-      const next = [...existing, entry]
-      const capped = next.length > 500 ? next.slice(next.length - 500) : next
-      return { ...prev, [deviceId]: capped }
-    })
-  }
 
   const handleBackup = async (deviceId: string) => {
     const device = devicesRef.current[deviceId]
@@ -496,7 +492,7 @@ function App() {
         deviceName: device?.name ?? id,
       })
       const topic = device?.topic ?? device?.id ?? id
-      mqttRef.current?.publish(`cmnd/${topic}/Restart`, '1')
+      void sendCommand(undefined, id, `cmnd/${topic}/Restart`, '1').catch(() => {})
       setRestarting((prev) => ({ ...prev, [id]: true }))
     }
     setBulkProgress(null)
@@ -511,12 +507,10 @@ function App() {
 
   const sendPowerToggle = (deviceId: string, channelId: number) => {
     const device = devicesRef.current[deviceId]
-    if (!device || !mqttRef.current?.connected) {
-      return
-    }
+    if (!device) return
     const targetTopic = device.topic || device.id
     const command = channelId === 1 ? 'POWER' : `POWER${channelId}`
-    mqttRef.current.publish(`cmnd/${targetTopic}/${command}`, 'TOGGLE')
+    void sendCommand(undefined, deviceId, `cmnd/${targetTopic}/${command}`, 'TOGGLE').catch(() => {})
   }
 
 
@@ -598,128 +592,39 @@ function App() {
   }
 
 
-  const connectMqttLive = (mqttSettings: MqttSettings) => {
-    mqttRef.current?.end(true)
-    const client = createMqttClient(mqttSettings)
-    mqttRef.current = client
-    setMqttState('checking')
-
-    client.on('connect', () => {
-      setMqttState('ok')
-      client.subscribe(topics)
-    })
-
-    client.on('reconnect', () => setMqttState('checking'))
-    client.on('close', () => setMqttState('error'))
-    client.on('offline', () => setMqttState('error'))
-    client.on('error', () => setMqttState('error'))
-
-    client.on('message', (topic, payload) => {
-      const parts = topic.split('/')
-      if (parts.length < 3) {
-        return
-      }
-      const scope = parts[0]
-      const type = parts[parts.length - 1]
-      const rawDeviceId = parts.slice(1, -1).join('/')
-      if (scope === 'discovery') {
-        return
-      }
-      const text = payload.toString()
-      const deviceId = rawDeviceId
-      appendConsoleLine(deviceId, topic, payload.toString())
-      const brokerId = activeBrokerRef.current
-      if (type === 'LWT') {
-        const isOnline = text.toLowerCase() === 'online'
-        if (isOnline) {
-          DeviceState.setOnline(deviceId, true, brokerId ?? undefined)
-        } else {
-          DeviceState.setOnline(deviceId, false, brokerId ?? undefined)
-        }
-        return
-      }
-
-      let data: Record<string, any> | null = null
-      try {
-        data = JSON.parse(text)
-      } catch {
-        data = null
-      }
-      if (!data) {
-        if (/^POWER\d*$/i.test(type)) {
-          const normalized = text.trim().toUpperCase()
-          if (normalized === 'ON' || normalized === 'OFF') {
-            data = { [type]: normalized }
-          }
-        } else if (/^(VAR|MEM|RULETIMER)\d+$/i.test(type)) {
-          data = { [type]: text.trim() }
-        }
-      }
-
-      if (!data) {
-        return
-      }
-
-      if (scope === 'tele' || scope === 'stat') {
-        DeviceState.ingestMessage({
-          deviceId,
-          scope,
-          type,
-          payload: data,
-          brokerId: brokerId ?? undefined,
-        })
-      }
-    })
-  }
-
-  
-
-  const validateAndConnect = async (
-    nextSettings: AppSettings,
-    connectLive: boolean,
+  const validateAndConnectCouchDb = async (
+    couchdb: AppSettings['couchdb']
   ): Promise<ConnectionResult> => {
-    setMqttState('checking')
     setCouchState('checking')
-
-    let mqttOk = false
     let couchOk = false
-    let mqttError: string | undefined
     let couchError: string | undefined
-
     try {
-      await testMqttConnection(nextSettings.mqtt)
-      mqttOk = true
-      setMqttState('ok')
-    } catch (error) {
-      mqttError = error instanceof Error ? error.message : 'MQTT-Verbindung fehlgeschlagen.'
-      setMqttState('error')
-    }
-
-    try {
-      await testCouchDbConnection(nextSettings.couchdb)
-      couchOk = true
-      setCouchState('ok')
-    } catch (error) {
-      couchError = error instanceof Error ? error.message : 'CouchDB-Verbindung fehlgeschlagen.'
-      setCouchState('error')
-    }
-
-    if (mqttOk && couchOk) {
-      saveSettings(nextSettings)
-      setSettings(nextSettings)
-      setForceModal(false)
-      setModalOpen(false)
-      if (connectLive) {
-        const broker = brokers.find((item) => item.id === activeBrokerId)
-        connectMqttLive(broker?.mqtt ?? nextSettings.mqtt)
+      await postCouchDbConfig(undefined, couchdb)
+      const status = await getBackendStatus()
+      couchOk = status?.couchdb ?? false
+      if (couchOk) {
+        setCouchState('ok')
+        setSettings((prev) => ({ ...prev, couchdb }))
+        saveSettings({ ...settingsRef.current, couchdb })
+        setForceModal(false)
+        setModalOpen(false)
+        const list = await fetchBrokersFromBackend()
+        setBrokers(list)
+        const broker = list.find((b) => b.id === activeBrokerId) ?? list[0]
+        if (broker) {
+          setActiveBrokerId(broker.id)
+          const st = await getBackendStatus()
+          setMqttState(st?.brokers[broker.id] === 'connected' ? 'ok' : 'error')
+        }
+      } else {
+        setCouchState('error')
+        couchError = 'CouchDB nach Konfiguration nicht erreichbar.'
       }
-    } else {
-      setForceModal(true)
-      setModalOpen(true)
-      mqttRef.current?.end(true)
+    } catch (error) {
+      setCouchState('error')
+      couchError = error instanceof Error ? error.message : 'CouchDB-Konfiguration fehlgeschlagen.'
     }
-
-    return { mqttOk, couchOk, mqttError, couchError }
+    return { couchOk, couchError }
   }
 
   const onOpenSettings = () => {
@@ -834,12 +739,12 @@ function App() {
         {settingsDeviceId ? (
           <DeviceSettingsPage
             device={settingsDeviceId ? devices[settingsDeviceId] ?? null : null}
-            consoleLines={settingsDeviceId ? consoleLogs[settingsDeviceId] ?? [] : []}
+            consoleLines={settingsDeviceId ? ((lastApiDevices[settingsDeviceId]?.console as string[]) ?? []) : []}
             onSendCommand={(deviceId, command, payload) => {
               const device = devicesRef.current[deviceId]
-              if (!device || !mqttRef.current?.connected) return
+              if (!device) return
               const targetTopic = device.topic || device.id
-              mqttRef.current.publish(`cmnd/${targetTopic}/${command}`, payload)
+              void sendCommand(undefined, deviceId, `cmnd/${targetTopic}/${command}`, payload).catch(() => {})
             }}
             onTogglePower={sendPowerToggle}
             onBackup={handleBackup}
@@ -852,18 +757,16 @@ function App() {
         ) : rulesDeviceId ? (
           <RulesPage
             device={rulesDevice}
-            consoleLines={rulesDevice ? consoleLogs[rulesDevice.id] ?? [] : []}
+            consoleLines={rulesDevice ? ((lastApiDevices[rulesDevice.id]?.console as string[]) ?? []) : []}
             rules={rulesDeviceId ? DeviceState.getRules(rulesDeviceId) : {}}
             properties={
               rulesDeviceId ? (DeviceState.getProperties(rulesDeviceId) as Record<string, Record<string, unknown>>) : {}
             }
             onSendCommand={(deviceId, command, payload) => {
               const device = devicesRef.current[deviceId]
-              if (!device || !mqttRef.current?.connected) {
-                return
-              }
+              if (!device) return
               const targetTopic = device.topic || device.id
-              mqttRef.current.publish(`cmnd/${targetTopic}/${command}`, payload)
+              void sendCommand(undefined, deviceId, `cmnd/${targetTopic}/${command}`, payload).catch(() => {})
             }}
             onRuleUpdate={(ruleId, patch) => {
               if (!rulesDeviceId) {
@@ -942,8 +845,9 @@ function App() {
               onOpenPowerModal={(deviceId) => {
                 setPowerModalDeviceId(deviceId)
               }}
-              onOpenTelemetry={(deviceId) => {
+              onOpenTelemetry={(deviceId, anchorRect) => {
                 setTelemetryModalDeviceId(deviceId)
+                setTelemetryAnchorRect(anchorRect)
               }}
               onOpenRules={(deviceId) => setRulesDeviceId(deviceId)}
               onOpenSettings={(deviceId) => setSettingsDeviceId(deviceId)}
@@ -969,14 +873,22 @@ function App() {
         )}
       </main>
 
-      {telemetryModalDevice && (
+      {telemetryModalDevice && telemetryAnchorRect && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8"
-          onClick={() => setTelemetryModalDeviceId(null)}
+          className="fixed inset-0 z-50"
+          onClick={() => {
+            setTelemetryModalDeviceId(null)
+            setTelemetryAnchorRect(null)
+          }}
+          aria-hidden
         >
           <div
-            className="w-fit max-w-[90vw] rounded-2xl bg-slate-900 p-5 shadow-xl"
-            onClick={(event) => event.stopPropagation()}
+            className="fixed z-50 w-fit max-w-[min(90vw,28rem)] max-h-[85vh] overflow-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl"
+            style={{
+              top: telemetryAnchorRect.bottom + 8,
+              left: Math.min(telemetryAnchorRect.left, Math.max(8, window.innerWidth - 336)),
+            }}
+            onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-lg font-semibold text-white">Telemetrie</h3>
             <p className="mt-1 text-sm text-slate-300">
@@ -1003,6 +915,18 @@ function App() {
                 </div>
               )
             })()}
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setTelemetryModalDeviceId(null)
+                  setTelemetryAnchorRect(null)
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Schließen
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1056,15 +980,21 @@ function App() {
         onClose={() => setBrokerModalOpen(false)}
         onSelect={(id) => setActiveBrokerId(id)}
         onSave={async (broker) => {
-          await upsertBroker(settingsRef.current.couchdb, broker)
-          setBrokers((prev) => {
-            const existing = prev.find((item) => item.id === broker.id)
-            if (existing) {
-              return prev.map((item) => (item.id === broker.id ? broker : item))
-            }
-            return [...prev, broker]
-          })
+          const existing = brokers.find((b) => b.id === broker.id)
+          if (existing) {
+            await putBroker(undefined, broker.id, { name: broker.name, mqtt: broker.mqtt })
+          } else {
+            await postBroker(undefined, broker)
+          }
+          const list = await fetchBrokersFromBackend()
+          setBrokers(list)
           setActiveBrokerId(broker.id)
+        }}
+        onDelete={async (brokerId) => {
+          await deleteBroker(undefined, brokerId)
+          const list = await fetchBrokersFromBackend()
+          setBrokers(list)
+          if (activeBrokerId === brokerId) setActiveBrokerId(list[0]?.id ?? null)
         }}
       />
 
@@ -1088,7 +1018,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   const targetTopic = restartTarget.topic || restartTarget.id
-                  mqttRef.current?.publish(`cmnd/${targetTopic}/Restart`, '1')
+                  void sendCommand(undefined, restartTarget.id, `cmnd/${targetTopic}/Restart`, '1').catch(() => {})
                   setRestarting((prev) => ({ ...prev, [restartTarget.id]: true }))
                   setRestartTarget(null)
                 }}
@@ -1150,11 +1080,11 @@ function App() {
       })()}
 
       <ConfigModal
-        isOpen={modalOpen}
-        initialSettings={settings}
+        isOpen={configCheckDone && modalOpen}
+        initialCouchDb={settings.couchdb}
         canClose={!forceModal}
         onClose={() => setModalOpen(false)}
-        onApply={(next) => validateAndConnect(next, true)}
+        onApply={(couchdb) => validateAndConnectCouchDb(couchdb)}
       />
       </div>
   )

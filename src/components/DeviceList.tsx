@@ -9,7 +9,7 @@ type Props = {
   restarting: Record<string, boolean>
   onTogglePower: (deviceId: string, channelId: number) => void
   onOpenPowerModal: (deviceId: string) => void
-  onOpenTelemetry: (deviceId: string) => void
+  onOpenTelemetry: (deviceId: string, anchorRect: DOMRect) => void
   onOpenRules: (deviceId: string) => void
   onOpenSettings?: (deviceId: string) => void
   onBackup?: (deviceId: string) => void
@@ -498,7 +498,7 @@ export default function DeviceList({
                     className="rounded-md border border-slate-700 p-1 text-slate-200 hover:bg-slate-800"
                     aria-label="Telemetrie"
                     title="Telemetrie"
-                    onClick={() => onOpenTelemetry(device.id)}
+                    onClick={(e) => onOpenTelemetry(device.id, (e.currentTarget as HTMLElement).getBoundingClientRect())}
                   >
                     <svg
                       className="h-4 w-4"
