@@ -1,17 +1,45 @@
-# TasmotaScope – Produktiv-Setup (nur Backend + Frontend)
-# CouchDB separat: docker compose -f docker-compose.couchdb.yml up -d
+# TasmotaScope – Produktiv-Setup (Backend + Frontend + CouchDB)
 # Start: docker compose up -d
 # App: http://localhost:3000
+# CouchDB-Init (CORS + Datenbank) übernimmt das Backend beim Start.
 
 services:
+  couchdb:
+    image: couchdb:3
+    container_name: tasmotascope-couchdb
+    restart: unless-stopped
+    ports:
+      - "${COUCHDB_PORT:-5984}:5984"
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER:-admin}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-change-me}
+    volumes:
+      - couchdb_data:/opt/couchdb/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5984/_up || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tasmotascope
+
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: tasmotascope-backend
     restart: unless-stopped
+    depends_on:
+      couchdb:
+        condition: service_healthy
     environment:
       PORT: 3001
+      COUCHDB_HOST: couchdb
+      COUCHDB_PORT: 5984
+      COUCHDB_USER: ${COUCHDB_USER:-admin}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-change-me}
+      COUCHDB_DATABASE: ${COUCHDB_DATABASE:-tasmotascope}
     networks:
       - tasmotascope
 
@@ -27,6 +55,10 @@ services:
       - backend
     networks:
       - tasmotascope
+
+volumes:
+  couchdb_data:
+    driver: local
 
 networks:
   tasmotascope:

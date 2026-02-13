@@ -5,6 +5,7 @@ import { backupRouter, runScheduledAutoBackups } from './backup.js'
 import {
   createBroker,
   deleteBrokerAndDevices,
+  ensureCouchDbInitialized,
   fetchBrokers,
   updateBroker,
   type BrokerConfig,
@@ -272,7 +273,9 @@ statusRouter.post('/config/couchdb', (req: Request, res: Response) => {
   couchdbConfigOverride = { host, port, useTls, username, password, database }
   const couchdb = getCouchDb()
   if (couchdb) {
-    startListener(couchdb).catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
+    ensureCouchDbInitialized(couchdb)
+      .then(() => startListener(couchdb))
+      .catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
   }
   res.json({ ok: true })
 })
@@ -289,7 +292,9 @@ app.listen(PORT, () => {
 
   const couchdb = getCouchDb()
   if (couchdb) {
-    startListener(couchdb).catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
+    ensureCouchDbInitialized(couchdb)
+      .then(() => startListener(couchdb))
+      .catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
     const run = () => {
       const c = getCouchDb()
       if (!c) return

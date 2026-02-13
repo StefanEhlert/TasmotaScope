@@ -76,6 +76,52 @@ function normalizeBrokerId(brokerId?: string): string {
 
 const deviceRevCache = new Map<string, string>()
 
+/**
+ * CouchDB initialisieren: CORS aktivieren und App-Datenbank anlegen.
+ * Idempotent – kann bei jedem Start aufgerufen werden (z.B. statt couchdb-init-Container).
+ */
+export async function ensureCouchDbInitialized(settings: CouchDbSettings): Promise<void> {
+  const baseUrl = buildBaseUrl(settings)
+  const auth = buildAuthHeader(settings)
+  const headers: Record<string, string> = {
+    Authorization: auth,
+    'Content-Type': 'application/json',
+  }
+
+  const configPairs: [string, string][] = [
+    ['httpd/enable_cors', '"true"'],
+    ['cors/origins', '"*"'],
+    ['cors/credentials', '"true"'],
+    ['cors/methods', '"GET, PUT, POST, HEAD, DELETE, OPTIONS"'],
+    ['cors/headers', '"accept, authorization, content-type, origin, referer, x-csrf-token"'],
+  ]
+  for (const [key, value] of configPairs) {
+    const res = await fetch(`${baseUrl}/_node/_local/_config/${key}`, {
+      method: 'PUT',
+      headers,
+      body: value,
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok && res.status !== 412) {
+      const text = await res.text()
+      console.warn(`[CouchDB-Init] Config ${key} fehlgeschlagen (${res.status}): ${text}`)
+    }
+  }
+
+  const dbName = encodeURIComponent(settings.database)
+  const createDb = await fetch(`${baseUrl}/${dbName}`, {
+    method: 'PUT',
+    headers: { Authorization: auth },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (createDb.ok) {
+    console.log(`[CouchDB-Init] Datenbank ${settings.database} angelegt oder bereits vorhanden.`)
+  } else if (createDb.status !== 412) {
+    const text = await createDb.text()
+    console.warn(`[CouchDB-Init] Datenbank anlegen fehlgeschlagen (${createDb.status}): ${text}`)
+  }
+}
+
 export async function fetchBrokers(settings: CouchDbSettings): Promise<BrokerConfig[]> {
   const baseUrl = buildBaseUrl(settings)
   const headers = { Authorization: buildAuthHeader(settings) }

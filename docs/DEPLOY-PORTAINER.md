@@ -29,16 +29,12 @@ So bringst du TasmotaScope per Portainer-Stack auf deinen Server (z.B. VPS, NAS,
 
 6. **Compose path:** `docker-compose.yml` (relativer Pfad im Repo zur Compose-Datei).
 
-7. **Environment variables (optional):** z.B. `HTTP_PORT` = `3000` (Standard; Port 80 oft belegt). CouchDB läuft separat über `docker-compose.couchdb.yml`, dort ggf. `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DATABASE`, `COUCHDB_PORT` setzen.
+7. **Environment variables (optional):** z.B. `HTTP_PORT` = `3000`. CouchDB ist im Stack dabei; optional `COUCHDB_USER`, `COUCHDB_PASSWORD`, `COUCHDB_DATABASE` (Default: `tasmotascope`), `COUCHDB_PORT` (Default: 5984) setzen. Das Backend übernimmt die CouchDB-Initialisierung (CORS + Datenbank) beim Start.
 
 8. **Deploy the stack** klicken.  
-   Portainer klont das Repo und führt `docker compose up -d --build` aus (Build der Images Backend + Frontend). Beim ersten Mal kann das einige Minuten dauern.
+   Portainer klont das Repo und startet CouchDB, Backend und Frontend. Beim ersten Mal kann der Build einige Minuten dauern. Das Backend wartet auf den CouchDB-Health-Check und legt danach CORS und die App-Datenbank an.
 
-9. **Erreichbarkeit:** Weboberfläche unter `http://<DEINE-SERVER-IP>:3000` (bzw. `HTTP_PORT`).
-
-10. **CouchDB getrennt starten** (z.B. per Konsole auf dem Server):  
-    `docker compose -f docker-compose.couchdb.yml up -d`  
-    Danach im Frontend unter **Einstellungen** → CouchDB verbinden (Host = Server-IP, Port 5984, User/Pass/Datenbank). MQTT-Broker wie gewohnt eintragen.
+9. **Erreichbarkeit:** Weboberfläche unter `http://<DEINE-SERVER-IP>:3000` (bzw. `HTTP_PORT`). Im Frontend unter **Einstellungen** CouchDB verbinden (Host = Server-IP, Port 5984, User/Pass wie in den Env-Variablen, Datenbank z.B. `tasmotascope`). MQTT-Broker wie gewohnt eintragen.
 
 ---
 
@@ -75,10 +71,10 @@ Wenn du **kein Git** nutzen willst, musst du die Images woanders bauen und in de
 | URL | Deine Repo-URL (z.B. `https://github.com/.../TasmotaScope.git`) |
 | Branch | z.B. `main` |
 | Compose path | `docker-compose.yml` |
-| Env (optional) | z.B. `HTTP_PORT` = `3000` (Standard) |
+| Env (optional) | z.B. `HTTP_PORT` = `3000`, `COUCHDB_PASSWORD` setzen |
 | Start | Deploy the stack |
 
-Danach: Browser → `http://<Server-IP>:3000`. CouchDB separat starten (z.B. in der Konsole): `docker compose -f docker-compose.couchdb.yml up -d`, dann im Frontend unter Einstellungen verbinden.
+Danach: Browser → `http://<Server-IP>:3000`. CouchDB läuft im Stack; im Frontend unter Einstellungen verbinden (Host = Server-IP, Port 5984, User/Pass/Datenbank wie in den Env-Variablen).
 
 ---
 
@@ -119,7 +115,42 @@ Wenn im Repo schon Code liegt, auf GitHub oben links den **angezeigten Branch-Na
 
 Wenn der Stack aus Git in Portainer partout nicht funktioniert, kannst du **ohne Portainer-Git** deployen: Du klonst das Repo direkt auf dem Server und startest Docker Compose dort. Die Container laufen trotzdem und erscheinen in Portainer unter **Containers** (gleicher Docker-Host). Später Updates: per SSH `git pull` und `docker compose up -d --build`.
 
-**Schritte:**
+### Auf ZimaOS (CasaOS-Nachfolger)
+
+Unter ZimaOS liegen App-Daten oft unter **`/DATA/AppData/`**. Das Projekt kann z.B. dorthin geklont werden. Ersetze den Pfad unten bei Bedarf durch deinen tatsächlichen Projektordner.
+
+**Build-Fehler sichtbar machen (echte Fehlermeldung im Terminal):**
+```bash
+cd /DATA/AppData
+sudo git clone https://github.com/DEIN-USERNAME/TasmotaScope.git
+cd TasmotaScope
+sudo docker compose build 2>&1
+```
+
+**Build-Log in Datei speichern:**
+```bash
+cd /DATA/AppData/TasmotaScope
+sudo docker compose build 2>&1 | tee build.log
+```
+Danach z.B. `cat build.log` oder `less build.log` ausführen.
+
+**Stack bauen (ohne Cache) und starten:**
+```bash
+cd /DATA/AppData/TasmotaScope
+sudo docker compose build --no-cache
+sudo docker compose up -d
+```
+
+**Später aktualisieren:**
+```bash
+cd /DATA/AppData/TasmotaScope
+sudo git pull
+sudo docker compose up -d --build
+```
+
+---
+
+**Schritte (allgemein / andere Linux-Server):**
 
 1. **SSH-Zugang** zum Server haben (z.B. PuTTY oder `ssh user@server-ip`).
 
@@ -151,7 +182,7 @@ Wenn der Stack aus Git in Portainer partout nicht funktioniert, kannst du **ohne
    ```
    Ohne Cache-Probleme reicht: `sudo docker compose up -d --build`
 
-5. Erreichbarkeit prüfen: `http://<Server-IP>:3000`. CouchDB bei Bedarf separat: `sudo docker compose -f docker-compose.couchdb.yml up -d` (dann Port 5984).
+5. Erreichbarkeit prüfen: `http://<Server-IP>:3000`. CouchDB läuft im Stack; im Frontend unter Einstellungen verbinden (Host = Server-IP, Port 5984).
 
 **Später aktualisieren:**
 
@@ -174,13 +205,14 @@ Der Build eines der Images (Backend oder Frontend) schlägt beim `npm run build`
 **So bekommst du den echten Fehler (per SSH auf dem Server):**
 
 1. Per **SSH** auf den **Docker-Host** verbinden (den Server, auf dem Portainer bzw. der Agent läuft).
-2. Repo klonen (falls noch nicht vorhanden) und Build **manuell** starten, damit die komplette Ausgabe im Terminal erscheint:
+2. In den **Projektordner** wechseln (unter ZimaOS oft `cd /DATA/AppData/TasmotaScope`, auf anderen Systemen z.B. `cd /opt/TasmotaScope`). Repo klonen, falls noch nicht vorhanden, dann Build **manuell** starten, damit die komplette Ausgabe im Terminal erscheint:
    ```bash
    cd /opt
    sudo git clone https://github.com/DEIN-USERNAME/TasmotaScope.git
    cd TasmotaScope
    sudo docker compose build 2>&1
    ```
+   **ZimaOS:** Ersetze `cd /opt` und `cd TasmotaScope` durch `cd /DATA/AppData` und `cd TasmotaScope` (oder deinen Projektpfad).
    Bei privatem Repo ggf. vorher mit Token klonen:  
    `git clone https://DEIN-TOKEN@github.com/DEIN-USERNAME/TasmotaScope.git`
 3. Die Ausgabe durchscrollen. Am Ende steht, ob **backend** oder **frontend** abbricht und die **genaue Fehlermeldung** (z.B. „error TS2345“, „Cannot find module“, „JavaScript heap out of memory“). Die letzten 30–50 Zeilen reichen meist; diese kopieren und zum Beheben nutzen (oder hier einfügen).
@@ -191,6 +223,7 @@ Der Build eines der Images (Backend oder Frontend) schlägt beim `npm run build`
 cd /opt/TasmotaScope
 sudo docker compose build 2>&1 | tee build.log
 ```
+(ZimaOS: `cd /DATA/AppData/TasmotaScope` verwenden.)
 
 Danach `build.log` mit `cat build.log` oder `less build.log` ansehen bzw. per SCP herunterladen.
 
