@@ -137,7 +137,7 @@ export async function performBackup(
     throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
   }
 
-  return { lastTimestamp: backups.lastAt, count: backups.count }
+  return { lastTimestamp: backups.lastAt, count: backups.count, items: backups.items }
 }
 
 backupRouter.post('/backup', async (req, res) => {
@@ -155,7 +155,16 @@ backupRouter.post('/backup', async (req, res) => {
     }
 
     const result = await performBackup(couchdb, { host, deviceId, brokerId })
-    res.json({ ok: true, ...result })
+    const { getDeviceStore } = await import('./listener.js')
+    const store = getDeviceStore()
+    if (store) {
+      store.updateInfo(deviceId, {
+        backupCount: result.count,
+        backupItems: result.items.map((item) => ({ createdAt: item.createdAt, data: item.data })),
+        daysSinceBackup: 0,
+      })
+    }
+    res.json({ ok: true, lastTimestamp: result.lastTimestamp, count: result.count })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unbekannter Fehler'
     res.status(500).json({ error: `Backup fehlgeschlagen: ${message}` })
@@ -231,6 +240,18 @@ backupRouter.post('/backup/delete', async (req, res) => {
       const detail = await putRes.text()
       res.status(500).json({ error: `CouchDB-Update fehlgeschlagen: ${detail}` })
       return
+    }
+
+    const { getDeviceStore } = await import('./listener.js')
+    const store = getDeviceStore()
+    if (store) {
+      store.updateInfo(deviceId, {
+        backupCount: backups.count,
+        backupItems: backups.items.map((item) => ({ createdAt: item.createdAt, data: item.data })),
+        daysSinceBackup: backups.items[0]?.createdAt
+          ? Math.floor((Date.now() - new Date(backups.items[0].createdAt).getTime()) / 86400000)
+          : undefined,
+      })
     }
 
     res.json({ ok: true, count: backups.count, lastAt: backups.lastAt })
