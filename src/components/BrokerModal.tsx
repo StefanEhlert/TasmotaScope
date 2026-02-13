@@ -22,6 +22,28 @@ const blankMqtt: MqttSettings = {
 
 const toNumber = (value: string) => (value ? Number(value) : 0)
 
+/** UUID für neuen Broker; Fallback wenn crypto.randomUUID nicht verfügbar (z.B. HTTP statt HTTPS). */
+function generateBrokerId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const hex = '0123456789abcdef'
+  let out = ''
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  for (let i = 0; i < 16; i++) {
+    out += hex[bytes[i]! >> 4] + hex[bytes[i]! & 0x0f]
+    if ([3, 5, 7, 9].includes(i)) out += '-'
+  }
+  return out
+}
+
 export default function BrokerModal({
   isOpen,
   brokers,
@@ -89,7 +111,7 @@ export default function BrokerModal({
 
   const handleSave = async () => {
     if (!nameValid || !mqttValid) return
-    const id = editingId ?? crypto.randomUUID()
+    const id = editingId ?? generateBrokerId()
     const portNum = typeof mqtt.port === 'number' ? mqtt.port : Number(mqtt.port)
     const port = !Number.isNaN(portNum) && portNum > 0 && portNum <= 65535 ? portNum : 1883
     setSaving(true)
