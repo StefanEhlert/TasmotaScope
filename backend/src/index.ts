@@ -180,6 +180,12 @@ statusRouter.get('/brokers', async (_req: Request, res: Response) => {
   }
 })
 
+function parsePort(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.min(65535, Math.max(1, Math.floor(value)))
+  const n = parseInt(String(value ?? ''), 10)
+  return Number.isFinite(n) ? Math.min(65535, Math.max(1, n)) : 1883
+}
+
 statusRouter.post('/brokers', async (req: Request, res: Response) => {
   const couchdb = getCouchDb()
   if (!couchdb) {
@@ -191,8 +197,8 @@ statusRouter.post('/brokers', async (req: Request, res: Response) => {
   const name = typeof body.name === 'string' ? body.name.trim() : id
   const mqtt = body.mqtt && typeof body.mqtt === 'object'
     ? {
-        host: typeof body.mqtt.host === 'string' ? body.mqtt.host : '',
-        port: typeof body.mqtt.port === 'number' ? body.mqtt.port : 1883,
+        host: typeof body.mqtt.host === 'string' ? body.mqtt.host.trim() : '',
+        port: parsePort(body.mqtt.port),
         wsPort: typeof body.mqtt.wsPort === 'number' ? body.mqtt.wsPort : undefined,
         useTls: Boolean(body.mqtt.useTls),
         username: typeof body.mqtt.username === 'string' ? body.mqtt.username : '',
@@ -201,6 +207,10 @@ statusRouter.post('/brokers', async (req: Request, res: Response) => {
         path: typeof body.mqtt.path === 'string' ? body.mqtt.path : '/',
       }
     : { host: '', port: 1883, useTls: false, username: '', password: '', path: '/' }
+  if (!mqtt.host) {
+    res.status(400).json({ error: 'Broker-Host ist erforderlich.' })
+    return
+  }
   try {
     await createBroker(couchdb, { id, name, mqtt })
     await startListener(couchdb)

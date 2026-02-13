@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { BrokerConfig, MqttSettings } from '../lib/types'
 
 type Props = {
@@ -36,16 +36,26 @@ export default function BrokerModal({
   const [mqtt, setMqtt] = useState<MqttSettings>(blankMqtt)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const wasOpenRef = useRef(false)
 
+  // Beim Öffnen mit leerer Liste: Formular auf „Neuer Broker“ setzen. Bei bestehendem Broker: Formular aus Liste füllen. Bei editingId === null und Liste nicht leer: nicht überschreiben (Eingabe bleibt erhalten).
   useEffect(() => {
     if (!isOpen) {
+      wasOpenRef.current = false
       return
     }
-    if (!editingId) {
-      setName('')
-      setMqtt(blankMqtt)
+    const justOpened = !wasOpenRef.current
+    wasOpenRef.current = true
+
+    if (brokers.length === 0) {
+      if (justOpened) {
+        setEditingId(null)
+        setName('')
+        setMqtt(blankMqtt)
+      }
       return
     }
+    if (!editingId) return
     const selected = brokers.find((broker) => broker.id === editingId)
     if (selected) {
       setName(selected.name)
@@ -63,11 +73,12 @@ export default function BrokerModal({
     return null
   }
 
-  const portNum = Number(mqtt.port)
+  const portNum = typeof mqtt.port === 'number' ? mqtt.port : Number(mqtt.port)
   const mqttValid =
     Boolean(typeof mqtt.host === 'string' && mqtt.host.trim()) &&
     !Number.isNaN(portNum) &&
-    portNum > 0
+    portNum > 0 &&
+    portNum <= 65535
   const nameValid = Boolean(typeof name === 'string' && name.trim())
 
   const startNew = () => {
@@ -77,23 +88,28 @@ export default function BrokerModal({
   }
 
   const handleSave = async () => {
-    if (!nameValid || !mqttValid) {
-      return
-    }
-    setSaving(true)
+    if (!nameValid || !mqttValid) return
     const id = editingId ?? crypto.randomUUID()
-    const portNum = Number(mqtt.port)
-    await onSave({
-      id,
-      name: name.trim(),
-      mqtt: {
-        ...mqtt,
-        host: typeof mqtt.host === 'string' ? mqtt.host.trim() : '',
-        port: !Number.isNaN(portNum) && portNum > 0 ? portNum : 1883,
-      },
-    })
-    setEditingId(id)
-    setSaving(false)
+    const portNum = typeof mqtt.port === 'number' ? mqtt.port : Number(mqtt.port)
+    const port = !Number.isNaN(portNum) && portNum > 0 && portNum <= 65535 ? portNum : 1883
+    setSaving(true)
+    try {
+      await onSave({
+        id,
+        name: name.trim(),
+        mqtt: {
+          ...mqtt,
+          host: typeof mqtt.host === 'string' ? mqtt.host.trim() : '',
+          port,
+        },
+      })
+      setEditingId(id)
+    } catch (err) {
+      console.error('Broker speichern fehlgeschlagen:', err)
+      alert(err instanceof Error ? err.message : 'Broker speichern fehlgeschlagen.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
