@@ -3,8 +3,12 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 # Mehr Speicher für Vite/TypeScript-Build (vermeidet Abbruch auf kleinen Servern)
 ENV NODE_OPTIONS=--max-old-space-size=2048
+# shared/ vor npm ci kopieren (Frontend hat Abhängigkeit "file:shared")
 COPY package.json package-lock.json ./
+COPY shared ./shared
 RUN npm ci
+# Shared-Paket bauen (main: dist/index.js), sonst scheitert Frontend-Build
+RUN cd shared && npm ci && npm run build
 COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY postcss.config.js tailwind.config.js ./
 COPY public ./public
