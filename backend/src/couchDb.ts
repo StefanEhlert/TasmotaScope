@@ -34,6 +34,15 @@ export type DeviceSettingsUi = {
   collapsedBlockIds?: string[]
 }
 
+export type RuleConfig = {
+  text: string
+  enabled: boolean
+  once: boolean
+  stopOnError: boolean
+  originalText?: string
+  sentText?: string
+}
+
 export type PersistSnapshot = {
   deviceId: string
   brokerId?: string
@@ -49,6 +58,8 @@ export type PersistSnapshot = {
     signal?: number
   }
   raw: Record<string, unknown>
+  webButtonLabels?: Record<number, string>
+  rules?: Record<number, RuleConfig>
   autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi
 }
@@ -114,11 +125,12 @@ export async function ensureCouchDbInitialized(settings: CouchDbSettings): Promi
     headers: { Authorization: auth },
     signal: AbortSignal.timeout(10000),
   })
-  if (createDb.ok) {
+  if (createDb.ok || createDb.status === 412) {
     console.log(`[CouchDB-Init] Datenbank ${settings.database} angelegt oder bereits vorhanden.`)
-  } else if (createDb.status !== 412) {
+  } else {
     const text = await createDb.text()
     console.warn(`[CouchDB-Init] Datenbank anlegen fehlgeschlagen (${createDb.status}): ${text}`)
+    throw new Error(`Datenbank "${settings.database}" konnte nicht angelegt werden: ${text}`)
   }
 }
 
@@ -315,6 +327,8 @@ export async function upsertDeviceSnapshot(
   let existingSettingsUi: DeviceSettingsUi | undefined
   let existingAutoBackupIntervalDays: number | null | undefined
 
+  let existingRules: Record<number, RuleConfig> | undefined
+  let existingWebButtonLabels: Record<string, string> | undefined
   const getResponse = await fetch(docPath, { method: 'GET', headers })
   if (getResponse.ok) {
     const existing = (await getResponse.json()) as {
@@ -322,14 +336,35 @@ export async function upsertDeviceSnapshot(
       backups?: DeviceBackups
       settingsUi?: DeviceSettingsUi
       autoBackupIntervalDays?: number | null
+      rules?: Record<string, RuleConfig>
+      webButtonLabels?: Record<string, string>
     }
     rev = existing._rev
     existingBackups = existing.backups
     existingSettingsUi = existing.settingsUi
     existingAutoBackupIntervalDays = existing.autoBackupIntervalDays
+    if (existing.webButtonLabels && typeof existing.webButtonLabels === 'object') {
+      existingWebButtonLabels = existing.webButtonLabels
+    }
+    if (existing.rules && typeof existing.rules === 'object') {
+      const numRules: Record<number, RuleConfig> = {}
+      for (const [k, v] of Object.entries(existing.rules)) {
+        const n = parseInt(k, 10)
+        if (Number.isFinite(n) && v && typeof v === 'object') {
+          numRules[n] = v as RuleConfig
+        }
+      }
+      existingRules = Object.keys(numRules).length > 0 ? numRules : undefined
+    }
     if (rev) deviceRevCache.set(docId, rev)
   }
 
+  const snapshotWebButtonLabels =
+    snapshot.webButtonLabels && Object.keys(snapshot.webButtonLabels).length > 0
+      ? (Object.fromEntries(
+          Object.entries(snapshot.webButtonLabels).map(([k, v]) => [String(k), v])
+        ) as Record<string, string>)
+      : undefined
   const payload = {
     _id: docId,
     deviceId: snapshot.deviceId,
@@ -341,6 +376,14 @@ export async function upsertDeviceSnapshot(
     raw: snapshot.raw,
     updatedAt: new Date().toISOString(),
     ...(existingBackups ? { backups: existingBackups } : {}),
+    ...((snapshot.rules !== undefined && Object.keys(snapshot.rules).length > 0)
+      ? { rules: snapshot.rules }
+      : existingRules
+        ? { rules: existingRules }
+        : {}),
+    ...((snapshotWebButtonLabels ?? existingWebButtonLabels)
+      ? { webButtonLabels: snapshotWebButtonLabels ?? existingWebButtonLabels }
+      : {}),
     ...((snapshot.settingsUi !== undefined || existingSettingsUi !== undefined)
       ? { settingsUi: snapshot.settingsUi ?? existingSettingsUi }
       : {}),
@@ -371,11 +414,18 @@ export async function upsertDeviceSnapshot(
     const detail = await retryGet.text()
     throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
   }
-  const existing = (await retryGet.json()) as { _rev?: string; backups?: DeviceBackups }
+  const existing = (await retryGet.json()) as {
+    _rev?: string
+    backups?: DeviceBackups
+    rules?: Record<string, RuleConfig>
+    webButtonLabels?: Record<string, string>
+  }
   rev = existing._rev
   const retryPayload = {
     ...payload,
     ...(existing.backups ? { backups: existing.backups } : {}),
+    ...(existing.rules ? { rules: existing.rules } : {}),
+    ...(existing.webButtonLabels ? { webButtonLabels: existing.webButtonLabels } : {}),
     ...(rev ? { _rev: rev } : {}),
   }
   const retryPut = await fetch(docPath, { method: 'PUT', headers, body: JSON.stringify(retryPayload) })
@@ -396,6 +446,8 @@ export type DeviceSnapshotForHydrate = {
   topic?: string
   fields: { name?: string; ip?: string; firmware?: string; module?: string; uptime?: string; signal?: number }
   raw?: Record<string, unknown>
+  webButtonLabels?: Record<string, string>
+  rules?: Record<number, RuleConfig>
   backups?: { count: number; lastAt: string | null; items?: unknown[] }
   autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi

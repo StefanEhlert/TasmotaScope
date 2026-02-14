@@ -14,6 +14,8 @@ import type {
 type DeviceRecord = {
   info: DeviceInfo
   raw: Record<string, unknown>
+  /** WebButton(x)-Werte aus MQTT; werden bei jeder Nachricht ergänzt und persistiert. */
+  webButtonLabels?: Record<number, string>
   properties: Record<string, unknown>
   rules: Record<number, RuleConfig>
   poll?: { attempts: number; timer?: ReturnType<typeof setInterval>; varsBulkSent?: boolean; varsFullSent?: boolean }
@@ -112,7 +114,10 @@ function normalizePowerState(value?: unknown): 'ON' | 'OFF' | undefined {
   return undefined
 }
 
-function resolvePowerChannelsFromRaw(raw?: Record<string, unknown>): PowerChannel[] {
+function resolvePowerChannelsFromRaw(
+  raw?: Record<string, unknown>,
+  webButtonLabels?: Record<number, string>
+): PowerChannel[] {
   if (!raw) return []
   const channelIds = new Set<number>()
   const labels = new Map<number, string>()
@@ -165,7 +170,11 @@ function resolvePowerChannelsFromRaw(raw?: Record<string, unknown>): PowerChanne
   return Array.from(channelIds)
     .filter((id) => Number.isFinite(id) && id > 0)
     .sort((a, b) => a - b)
-    .map((id) => ({ id, state: states.get(id), label: labels.get(id) }))
+    .map((id) => ({
+      id,
+      state: states.get(id),
+      label: (webButtonLabels && webButtonLabels[id]) ?? labels.get(id),
+    }))
 }
 
 function updatePropertiesFromPayload(record: DeviceRecord, payload: Record<string, unknown>) {
@@ -302,6 +311,7 @@ export type HydrateSnapshot = {
   topic?: string
   fields: { name?: string; ip?: string; firmware?: string; module?: string; uptime?: string; signal?: number }
   raw?: Record<string, unknown>
+  webButtonLabels?: Record<number, string>
   rules?: Record<number, RuleConfig>
   backups?: { count: number; lastAt: string | null; items?: unknown[] }
   autoBackupIntervalDays?: number | null
@@ -333,6 +343,7 @@ export function createDeviceStore() {
     const record: DeviceRecord = {
       info: { id: deviceId, name: deviceId, brokerId },
       raw: {},
+      webButtonLabels: {},
       properties: {},
       rules: {},
     }
@@ -355,6 +366,8 @@ export function createDeviceStore() {
       signal: record.info.signal,
     },
     raw: record.raw,
+    webButtonLabels: record.webButtonLabels && Object.keys(record.webButtonLabels).length > 0 ? record.webButtonLabels : undefined,
+    rules: Object.keys(record.rules).length > 0 ? record.rules : undefined,
     autoBackupIntervalDays: record.info.autoBackupIntervalDays,
     settingsUi: record.info.settingsUi,
   })
@@ -463,8 +476,24 @@ export function createDeviceStore() {
     const record = ensureDevice(deviceId, brokerId)
     const payloadAny = payload as Record<string, unknown>
     const topicKey = `${scope}/${type}`
-    record.raw[topicKey] = payloadAny
+    const existing = (record.raw[topicKey] as Record<string, unknown> | undefined) ?? {}
+    record.raw[topicKey] = { ...existing, ...payloadAny }
+    const WEBBUTTONS_RAW_KEY = 'webButtons'
+    const webButtonEntries = Object.entries(payloadAny).filter(
+      ([k]) => typeof k === 'string' && /^WebButton\d+$/i.test(k.trim())
+    )
+    if (webButtonEntries.length > 0) {
+      const agg = (record.raw[WEBBUTTONS_RAW_KEY] as Record<string, unknown> | undefined) ?? {}
+      record.raw[WEBBUTTONS_RAW_KEY] = { ...agg, ...Object.fromEntries(webButtonEntries) }
+    }
     if (scope === 'stat' || scope === 'tele' || scope === 'cmnd') knownTopics.add(topicKey)
+    for (const [key, value] of Object.entries(payloadAny)) {
+      const m = /^WebButton(\d+)$/i.exec(key.trim())
+      if (m && typeof value === 'string' && value.trim()) {
+        if (!record.webButtonLabels) record.webButtonLabels = {}
+        record.webButtonLabels[parseInt(m[1], 10)] = value.trim()
+      }
+    }
     updatePropertiesFromPayload(record, payloadAny)
     record.info.hasRaw = true
     record.info.hasData = true
@@ -506,12 +535,12 @@ export function createDeviceStore() {
       else if (moduleValue && typeof moduleValue === 'object')
         moduleName = typeof (Object.values(moduleValue as object)[0]) === 'string' ? (Object.values(moduleValue as object)[0] as string) : undefined
       if (moduleName) record.info = mergeInfo(record.info, { module: moduleName })
-      record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw)
+      record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
     }
 
-    if (scope === 'stat' && type === 'STATE') record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw)
-    if (scope === 'tele' && type === 'STATE') record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw)
-    if (/^POWER\d*$/i.test(type)) record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw)
+    if (scope === 'stat' && type === 'STATE') record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
+    if (scope === 'tele' && type === 'STATE') record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
+    if (/^POWER\d*$/i.test(type)) record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
 
     const status = (payloadAny.Status ?? {}) as Record<string, unknown>
     const statusFwr = (payloadAny.StatusFWR ?? {}) as Record<string, unknown>
@@ -600,10 +629,23 @@ export function createDeviceStore() {
         daysSinceBackup: daysSinceBackup,
         backupCount,
         backupItems: backupItems.length > 0 ? backupItems : undefined,
-        autoBackupIntervalDays: snapshot.autoBackupIntervalDays ?? record.info.autoBackupIntervalDays ?? undefined,
+        // Backend/CouchDB is source of truth: do not carry over previous value when snapshot omits it
+        autoBackupIntervalDays:
+          snapshot.autoBackupIntervalDays !== undefined ? snapshot.autoBackupIntervalDays : undefined,
         settingsUi: mergeSettingsUi(record.info.settingsUi, snapshot.settingsUi),
       }
       record.raw = snapshot.raw ?? {}
+      const WEBBUTTONS_RAW_KEY = 'webButtons'
+      if (!record.raw[WEBBUTTONS_RAW_KEY]) {
+        const agg: Record<string, unknown> = {}
+        for (const payload of Object.values(record.raw)) {
+          if (payload && typeof payload === 'object')
+            for (const [k, v] of Object.entries(payload as Record<string, unknown>))
+              if (/^WebButton\d+$/i.test(String(k).trim()) && typeof v === 'string' && v.trim())
+                agg[k] = v.trim()
+        }
+        if (Object.keys(agg).length > 0) record.raw[WEBBUTTONS_RAW_KEY] = agg
+      }
       if (snapshot.rules != null && typeof snapshot.rules === 'object') {
         record.rules = { ...record.rules, ...snapshot.rules }
       }
@@ -611,7 +653,15 @@ export function createDeviceStore() {
         if (topicKey.startsWith('stat/') || topicKey.startsWith('tele/') || topicKey.startsWith('cmnd/'))
           knownTopics.add(topicKey)
       })
-      record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw)
+      if (snapshot.webButtonLabels != null && typeof snapshot.webButtonLabels === 'object') {
+        const numLabels: Record<number, string> = {}
+        for (const [k, v] of Object.entries(snapshot.webButtonLabels)) {
+          const n = parseInt(k, 10)
+          if (Number.isFinite(n) && typeof v === 'string' && v.trim()) numLabels[n] = v.trim()
+        }
+        record.webButtonLabels = Object.keys(numLabels).length > 0 ? numLabels : record.webButtonLabels
+      }
+      record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
       record.info.hasRaw = Boolean(record.raw && Object.keys(record.raw).length > 0)
       record.info.hasData = true
       Object.values(record.raw).forEach((payload) => {
@@ -622,11 +672,25 @@ export function createDeviceStore() {
     })
   }
 
+  const clearAllDevices = () => {
+    devices.forEach((record) => {
+      if (record.poll?.timer) clearInterval(record.poll.timer)
+    })
+    devices.clear()
+    knownTopics.clear()
+    dirtyDevices.clear()
+    pendingPersist.clear()
+    inFlightPersists.clear()
+    editingRules.clear()
+    notify()
+  }
+
   return {
     subscribe(callback: () => void) {
       listeners.add(callback)
       return () => { listeners.delete(callback) }
     },
+    clearAllDevices,
     getSnapshot(): Record<string, DeviceInfo> {
       const out: Record<string, DeviceInfo> = {}
       devices.forEach((record, key) => {
@@ -639,6 +703,12 @@ export function createDeviceStore() {
     getProperties(deviceId: string) { return devices.get(deviceId)?.properties ?? {} },
     getDevice(deviceId: string) { return devices.get(deviceId)?.info ?? null },
     getKnownTopics(): string[] { return Array.from(knownTopics).sort() },
+    replaceRules(deviceId: string, rules: Record<number, RuleConfig>) {
+      const record = ensureDevice(deviceId)
+      record.rules = { ...rules }
+      markDirty(record)
+      notify()
+    },
     updateRule(deviceId: string, ruleId: number, patch: Partial<RuleConfig>) {
       const record = ensureDevice(deviceId)
       record.rules[ruleId] = { ...(record.rules[ruleId] ?? defaultRule), ...patch }

@@ -60,6 +60,9 @@ export type PersistSnapshot = {
     signal?: number
   }
   raw: Record<string, unknown>
+  /** WebButton(x)-Namen pro Kanal-ID, vom Listener aus MQTT-Payloads gesammelt und persistiert. */
+  webButtonLabels?: Record<number, string>
+  rules?: Record<number, RuleConfig>
   autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi
 }

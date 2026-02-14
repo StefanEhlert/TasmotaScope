@@ -5,13 +5,14 @@ import DeviceList from './components/DeviceList'
 import DeviceSettingsPage from './components/DeviceSettingsPage'
 import RulesPage from './components/RulesPage'
 import { DeviceState } from './DeviceState'
-import { fetchDeviceSnapshot, upsertDeviceSnapshot } from './lib/couchDb'
+import { fetchDeviceSnapshot } from './lib/couchDb'
 import {
   deleteBroker,
   fetchBrokersFromBackend,
   fetchDevicesFromBackend,
   getBackendStatus,
   getDevicesStreamUrl,
+  patchDeviceInfo,
   postBroker,
   postCouchDbConfig,
   putBroker,
@@ -85,6 +86,10 @@ function App() {
   const settingsRef = useRef<AppSettings>(defaultSettings)
   const lastRulesLoadRef = useRef<string | null>(null)
   const lastSettingsWebButtonRequestRef = useRef<string | null>(null)
+  /** Verhindert, dass ein veraltetes SSE-Update eine gerade gesetzte Auto-Backup-Änderung überschreibt. */
+  const lastAutoBackupUpdateRef = useRef<{ deviceId: string; value: number | null; at: number } | null>(null)
+  /** Verhindert, dass ein veraltetes SSE-Update gerade gespeicherte Rules überschreibt. */
+  const lastRulesUpdateRef = useRef<{ deviceId: string; at: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -203,7 +208,10 @@ function App() {
       void sendCommand(undefined, deviceId, topic, payload).catch(() => {})
     })
     DeviceState.setPersistFn((snapshot) => {
-      return upsertDeviceSnapshot(settingsRef.current.couchdb, snapshot)
+      return patchDeviceInfo(undefined, snapshot.deviceId, {
+        autoBackupIntervalDays: snapshot.autoBackupIntervalDays,
+        settingsUi: snapshot.settingsUi,
+      })
     })
   }, [])
 
@@ -216,6 +224,23 @@ function App() {
     const apply = (data: Record<string, unknown>) => {
       if (cancelled) return
       const asRecord = data as Record<string, Record<string, unknown>>
+      const recent = lastAutoBackupUpdateRef.current
+      if (recent && Date.now() - recent.at < 3000 && asRecord[recent.deviceId]) {
+        asRecord[recent.deviceId] = {
+          ...asRecord[recent.deviceId],
+          autoBackupIntervalDays: recent.value,
+        }
+      }
+      const recentRules = lastRulesUpdateRef.current
+      if (recentRules && Date.now() - recentRules.at < 3000 && asRecord[recentRules.deviceId]) {
+        const currentRules = DeviceState.getRules(recentRules.deviceId)
+        if (Object.keys(currentRules).length > 0) {
+          asRecord[recentRules.deviceId] = {
+            ...asRecord[recentRules.deviceId],
+            rules: currentRules,
+          }
+        }
+      }
       setLastApiDevices(asRecord)
       const snapshots = apiDevicesToHydrateSnapshots(asRecord)
       if (snapshots.length > 0) DeviceState.hydrateFromSnapshots(snapshots)
@@ -281,13 +306,19 @@ function App() {
       return
     }
     const device = devices[settingsDeviceId]
-    if (!device?.powerChannels?.length) return
-    const needsLabels = device.powerChannels.some((ch) => !ch.label?.trim())
-    if (!needsLabels || lastSettingsWebButtonRequestRef.current === settingsDeviceId) return
+    if (!device?.powerChannels?.length || lastSettingsWebButtonRequestRef.current === settingsDeviceId) return
     lastSettingsWebButtonRequestRef.current = settingsDeviceId
     const targetTopic = device.topic || device.id
-    void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/STATUS`, '5').catch(() => {})
+    for (const ch of device.powerChannels) {
+      void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebButton${ch.id}`, '').catch(() => {})
+    }
   }, [settingsDeviceId, devices])
+
+  useEffect(() => {
+    if (settingsDeviceId ?? rulesDeviceId) {
+      window.scrollTo(0, 0)
+    }
+  }, [settingsDeviceId, rulesDeviceId])
 
   useEffect(() => {
     if (!activeBrokerId || !configCheckDone) return
@@ -395,8 +426,35 @@ function App() {
     setDeleteBackupTarget({ deviceId, index })
   }
 
-  const handleUpdateAutoBackup = (deviceId: string, intervalDays: number | null) => {
+  const handleUpdateAutoBackup = async (deviceId: string, intervalDays: number | null) => {
+    lastAutoBackupUpdateRef.current = { deviceId, value: intervalDays, at: Date.now() }
+    setTimeout(() => {
+      if (lastAutoBackupUpdateRef.current?.deviceId === deviceId) {
+        lastAutoBackupUpdateRef.current = null
+      }
+    }, 3000)
     DeviceState.updateInfo(deviceId, { autoBackupIntervalDays: intervalDays })
+    try {
+      await patchDeviceInfo(undefined, deviceId, { autoBackupIntervalDays: intervalDays })
+    } catch (err) {
+      console.error('Auto-Backup am Backend aktualisieren fehlgeschlagen:', err)
+    }
+  }
+
+  const handleRuleChange = async (deviceId: string) => {
+    lastRulesUpdateRef.current = { deviceId, at: Date.now() }
+    setTimeout(() => {
+      if (lastRulesUpdateRef.current?.deviceId === deviceId) {
+        lastRulesUpdateRef.current = null
+      }
+    }, 3000)
+    const rules = DeviceState.getRules(deviceId)
+    if (Object.keys(rules).length === 0) return
+    try {
+      await patchDeviceInfo(undefined, deviceId, { rules })
+    } catch (err) {
+      console.error('Rules am Backend aktualisieren fehlgeschlagen:', err)
+    }
   }
 
   const performDeleteBackup = async () => {
@@ -608,11 +666,20 @@ function App() {
         saveSettings({ ...settingsRef.current, couchdb })
         setForceModal(false)
         setModalOpen(false)
+        // In-Memory-Gerätestand leeren, damit keine alten Werte (z. B. Auto-Backup) aus alter DB kleben
+        DeviceState.clearAllDevices()
+        setDevices({})
+        setLastApiDevices({})
         const list = await fetchBrokersFromBackend()
         setBrokers(list)
-        const broker = list.find((b) => b.id === activeBrokerId) ?? list[0]
-        if (broker) {
+        if (list.length === 0) {
+          setActiveBrokerId(null)
+          saveActiveBrokerId(null)
+          setBrokerModalOpen(true)
+        } else {
+          const broker = list.find((b) => b.id === activeBrokerId) ?? list[0]
           setActiveBrokerId(broker.id)
+          saveActiveBrokerId(broker.id)
           const st = await getBackendStatus()
           setMqttState(st?.brokers[broker.id] === 'connected' ? 'ok' : 'error')
         }
@@ -773,7 +840,9 @@ function App() {
                 return
               }
               DeviceState.updateRule(rulesDeviceId, ruleId, patch)
+              void handleRuleChange(rulesDeviceId)
             }}
+            onRuleChange={handleRuleChange}
             onBack={() => setRulesDeviceId(null)}
           />
         ) : (

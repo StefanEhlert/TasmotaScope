@@ -11,6 +11,7 @@ const store = createDeviceStore()
 
 export const DeviceState = {
   subscribe: store.subscribe.bind(store),
+  clearAllDevices: store.clearAllDevices.bind(store),
   getSnapshot: store.getSnapshot.bind(store),
   getRaw: store.getRaw.bind(store),
   getRules: store.getRules.bind(store),

@@ -747,11 +747,18 @@ function tokenizeLine(line: string, lineOffset: number): Token[] {
     }
 
     currentOffset += part.length
-    
-    // Check if there's a semicolon right after this part in the original line
-    // (but only if we haven't already processed it as part of a word ending with ;)
-    if (codePart[currentOffset - lineOffset] === ';') {
-      // Check if the last token is not already a semicolon
+
+    // Check if there's a semicolon right after this part in the original line.
+    // Only add it here if the next part is NOT already ";" (otherwise we'd add it twice:
+    // once here and once in the "part === ';'" branch when we process the next part).
+    const nextNonWhitespacePart = (() => {
+      for (let j = i + 1; j < parts.length; j++) {
+        const p = parts[j]
+        if (p && !/^\s+$/.test(p)) return p
+      }
+      return null
+    })()
+    if (codePart[currentOffset - lineOffset] === ';' && nextNonWhitespacePart !== ';') {
       const lastToken = tokens.length > 0 ? tokens[tokens.length - 1] : null
       if (!lastToken || lastToken.value !== ';') {
         tokens.push({
@@ -841,25 +848,24 @@ export function renderTokens(tokens: Token[], text: string, enabled: boolean = t
       // Add text before token (including separators like ;)
       if (relativeStart > lastIndex) {
         const beforeText = lineText.slice(lastIndex, relativeStart)
-        // Highlight semicolons and other separators
-        const highlightedBefore = escapeHtml(beforeText).replace(/;/g, '<span class="text-slate-500 font-semibold">;</span>')
-        lineHtml += highlightedBefore
+        const escapedBefore = escapeHtml(beforeText)
+        const withSemicolons = escapedBefore.replace(/;/g, '<span class="text-slate-500 font-semibold">;</span>')
+        lineHtml += highlightVariablePercentSigns(withSemicolons)
       }
-      
+
       // Add token with appropriate class
       const className = getTokenClassName(token.type, enabled)
-      const tokenValue = escapeHtml(token.value)
+      const tokenValue = highlightVariablePercentSigns(escapeHtml(token.value))
       lineHtml += `<span class="${className}">${tokenValue}</span>`
-      
+
       lastIndex = relativeEnd
     }
-    
+
     // Add remaining text in line (including separators)
     if (lastIndex < lineText.length) {
       const remainingText = lineText.slice(lastIndex)
-      // Highlight semicolons and other separators
-      const highlightedRemaining = escapeHtml(remainingText).replace(/;/g, '<span class="text-slate-500 font-semibold">;</span>')
-      lineHtml += highlightedRemaining
+      const escapedRemaining = escapeHtml(remainingText).replace(/;/g, '<span class="text-slate-500 font-semibold">;</span>')
+      lineHtml += highlightVariablePercentSigns(escapedRemaining)
     }
     
     // Determine background color based on block index (zebra stripes)
@@ -902,19 +908,19 @@ export function renderStructured(structured: StructuredLine[], indentWidth: numb
       // Add text before token
       if (relativeStart > lastIndex) {
         const beforeText = line.rawText.slice(lastIndex, relativeStart)
-        lineHtml += escapeHtml(beforeText)
+        lineHtml += highlightVariablePercentSigns(escapeHtml(beforeText))
       }
 
       // Add token with appropriate class
       const className = getTokenClassName(token.type)
-      lineHtml += `<span class="${className}">${escapeHtml(token.value)}</span>`
+      lineHtml += `<span class="${className}">${highlightVariablePercentSigns(escapeHtml(token.value))}</span>`
 
       lastIndex = relativeEnd
     }
 
     // Add remaining text in line
     if (lastIndex < line.rawText.length) {
-      lineHtml += escapeHtml(line.rawText.slice(lastIndex))
+      lineHtml += highlightVariablePercentSigns(escapeHtml(line.rawText.slice(lastIndex)))
     }
 
     // No block styling - removed backgrounds and borders as they were confusing
@@ -985,4 +991,9 @@ function escapeHtml(text: string): string {
   const div = document.createElement('div')
   div.textContent = text
   return div.innerHTML
+}
+
+/** Zeichenketten der Form %NAME%: die umschließenden % in hellem Grau darstellen (Tasmota-Variablen lesbarer machen). */
+function highlightVariablePercentSigns(escapedHtml: string): string {
+  return escapedHtml.replace(/%([^%]*)%/g, '<span class="text-slate-400">%</span>$1<span class="text-slate-400">%</span>')
 }

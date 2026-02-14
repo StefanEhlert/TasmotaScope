@@ -105,14 +105,19 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
     if (structuredText !== oldText) {
       // Store the structured and corrected text (must match overlay for synchronization)
       plainValueRef.current = structuredText
-      
+
+      // Keep textarea DOM in sync (ref updates don't trigger re-render, so value={plainValueRef.current} would stay stale)
+      if (textareaRef.current) {
+        textareaRef.current.value = structuredText
+      }
+
       // Update highlighting with structured text (must match textarea)
       if (highlightRef.current) {
         const tokens = parseRule(structuredText)
         const html = renderTokens(tokens, structuredText, enabled)
         highlightRef.current.innerHTML = html || '<br>'
       }
-      
+
       // Update parent with structured and corrected text
       onChange(structuredText)
       
@@ -182,15 +187,16 @@ const RuleEditor = forwardRef<RuleEditorRef, Props>(({
       const structured = parseStructured(value)
       let structuredText = structuredToText(structured)
       structuredText = correctText(structuredText)
-      
+
       plainValueRef.current = structuredText
-      
+      if (textareaRef.current) {
+        textareaRef.current.value = structuredText
+      }
       if (highlightRef.current) {
         const tokens = parseRule(structuredText)
         const html = renderTokens(tokens, structuredText, enabled)
         highlightRef.current.innerHTML = html || '<br>'
       }
-      
       if (structuredText !== value) {
         onChange(structuredText)
         // Nicht onUserChange – das ist nur Strukturierung beim Laden, keine Benutzereingabe

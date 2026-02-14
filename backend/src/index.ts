@@ -8,6 +8,7 @@ import {
   ensureCouchDbInitialized,
   fetchBrokers,
   updateBroker,
+  upsertDeviceSnapshot,
   type BrokerConfig,
 } from './couchDb.js'
 import {
@@ -100,7 +101,7 @@ function devicesWithConsole(): Record<string, Record<string, unknown>> {
     out[id] = {
       ...base,
       console: consoles[id] ?? [],
-      ...(record ? { raw: record.raw, rules: record.rules } : {}),
+      ...(record ? { raw: record.raw, rules: record.rules, webButtonLabels: record.webButtonLabels } : {}),
     }
   }
   return out
@@ -164,6 +165,67 @@ statusRouter.get('/devices/stream', (_req: Request, res: Response) => {
       }
     }
   })
+})
+
+/** Geräte-Infos (z. B. Auto-Backup, settingsUi) aktualisieren – Backend-Store + CouchDB, damit SSE den neuen Stand sendet. */
+statusRouter.patch('/devices/:deviceId', async (req: Request, res: Response) => {
+  const deviceId = typeof req.params.deviceId === 'string' ? req.params.deviceId.trim() : ''
+  if (!deviceId) {
+    res.status(400).json({ error: 'deviceId erforderlich' })
+    return
+  }
+  const store = getDeviceStore()
+  const couchdb = getCouchDb()
+  if (!store || !couchdb) {
+    res.status(503).json({ error: 'Listener oder CouchDB nicht aktiv' })
+    return
+  }
+  const body = req.body as Record<string, unknown>
+  const patch: { autoBackupIntervalDays?: number | null; settingsUi?: Record<string, unknown> } = {}
+  if (body.autoBackupIntervalDays !== undefined) {
+    patch.autoBackupIntervalDays =
+      body.autoBackupIntervalDays === null || body.autoBackupIntervalDays === ''
+        ? null
+        : Math.max(0, Math.min(365, Number(body.autoBackupIntervalDays) || 0)) || null
+  }
+  if (body.settingsUi !== undefined && body.settingsUi !== null && typeof body.settingsUi === 'object') {
+    patch.settingsUi = body.settingsUi as Record<string, unknown>
+  }
+  if (body.rules !== undefined && body.rules !== null && typeof body.rules === 'object') {
+    const rulesObj = body.rules as Record<string, unknown>
+    const rules: Record<number, { text: string; enabled: boolean; once: boolean; stopOnError: boolean; originalText?: string; sentText?: string }> = {}
+    for (const [k, v] of Object.entries(rulesObj)) {
+      const ruleId = parseInt(k, 10)
+      if (!Number.isFinite(ruleId) || v == null || typeof v !== 'object') continue
+      const r = v as Record<string, unknown>
+      rules[ruleId] = {
+        text: typeof r.text === 'string' ? r.text : '',
+        enabled: Boolean(r.enabled),
+        once: Boolean(r.once),
+        stopOnError: Boolean(r.stopOnError),
+        originalText: typeof r.originalText === 'string' ? r.originalText : undefined,
+        sentText: typeof r.sentText === 'string' ? r.sentText : undefined,
+      }
+    }
+    store.replaceRules(deviceId, rules)
+  }
+  if (Object.keys(patch).length === 0 && (body.rules === undefined || body.rules === null)) {
+    res.json({ ok: true })
+    return
+  }
+  try {
+    if (Object.keys(patch).length > 0) {
+      store.updateInfo(deviceId, patch)
+    }
+    const snapshot = store.buildSnapshotForDevice(deviceId)
+    if (snapshot) {
+      await upsertDeviceSnapshot(couchdb, snapshot)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[PATCH /devices/:deviceId]', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Gerät aktualisieren fehlgeschlagen' })
+  }
 })
 
 statusRouter.get('/brokers', async (_req: Request, res: Response) => {
@@ -268,7 +330,7 @@ statusRouter.delete('/brokers/:id', async (req: Request, res: Response) => {
   }
 })
 
-statusRouter.post('/config/couchdb', (req: Request, res: Response) => {
+statusRouter.post('/config/couchdb', async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>
   const host = typeof body.host === 'string' ? body.host.trim() : ''
   const database = typeof body.database === 'string' ? body.database.trim() : ''
@@ -283,9 +345,14 @@ statusRouter.post('/config/couchdb', (req: Request, res: Response) => {
   couchdbConfigOverride = { host, port, useTls, username, password, database }
   const couchdb = getCouchDb()
   if (couchdb) {
-    ensureCouchDbInitialized(couchdb)
-      .then(() => startListener(couchdb))
-      .catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
+    try {
+      await ensureCouchDbInitialized(couchdb)
+      await startListener(couchdb)
+    } catch (err) {
+      console.error('[Listener] Start fehlgeschlagen:', err)
+      res.status(500).json({ error: err instanceof Error ? err.message : 'CouchDB-Initialisierung fehlgeschlagen' })
+      return
+    }
   }
   res.json({ ok: true })
 })

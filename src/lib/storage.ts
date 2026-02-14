@@ -46,6 +46,10 @@ export function loadActiveBrokerId(): string | null {
   return localStorage.getItem(ACTIVE_BROKER_KEY)
 }
 
-export function saveActiveBrokerId(id: string) {
-  localStorage.setItem(ACTIVE_BROKER_KEY, id)
+export function saveActiveBrokerId(id: string | null) {
+  if (id == null) {
+    localStorage.removeItem(ACTIVE_BROKER_KEY)
+  } else {
+    localStorage.setItem(ACTIVE_BROKER_KEY, id)
+  }
 }

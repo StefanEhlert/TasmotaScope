@@ -25,6 +25,10 @@ const deviceConsoleLines = new Map<string, string[]>()
 const CONSOLE_MAX_LINES = 30
 let currentCouchDb: CouchDbSettings | null = null
 
+/** Debounce: WebButton-Abfragen pro Gerät höchstens alle 60s auslösen. */
+const lastWebButtonRequestByDevice = new Map<string, number>()
+const WEBBUTTON_DEBOUNCE_MS = 60_000
+
 function appendConsoleLine(deviceId: string, line: string): void {
   let lines = deviceConsoleLines.get(deviceId)
   if (!lines) {
@@ -74,18 +78,33 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
   try {
     const snapshots = await fetchDeviceSnapshots(couchdb)
     if (snapshots.length > 0) {
-      const hydratePayload: DeviceSnapshotForHydrate[] = snapshots.map((doc) => ({
-        deviceId: doc.deviceId,
-        brokerId: doc.brokerId,
-        lastSeen: doc.lastSeen,
-        online: doc.online,
-        topic: doc.topic,
-        fields: doc.fields ?? {},
-        raw: doc.raw,
-        backups: doc.backups,
-        autoBackupIntervalDays: doc.autoBackupIntervalDays,
-        settingsUi: doc.settingsUi,
-      }))
+      const hydratePayload = snapshots.map((doc) => {
+        const webButtonLabels =
+          doc.webButtonLabels && typeof doc.webButtonLabels === 'object'
+            ? (() => {
+                const r: Record<number, string> = {}
+                for (const [k, v] of Object.entries(doc.webButtonLabels!)) {
+                  const n = parseInt(k, 10)
+                  if (Number.isFinite(n) && typeof v === 'string' && v.trim()) r[n] = v.trim()
+                }
+                return Object.keys(r).length > 0 ? r : undefined
+              })()
+            : undefined
+        return {
+          deviceId: doc.deviceId,
+          brokerId: doc.brokerId,
+          lastSeen: doc.lastSeen,
+          online: doc.online,
+          topic: doc.topic,
+          fields: doc.fields ?? {},
+          raw: doc.raw,
+          webButtonLabels,
+          rules: doc.rules,
+          backups: doc.backups,
+          autoBackupIntervalDays: doc.autoBackupIntervalDays,
+          settingsUi: doc.settingsUi,
+        }
+      })
       store.hydrateFromSnapshots(hydratePayload)
       console.log(`[Listener] Rehydration: ${snapshots.length} Geräte aus CouchDB geladen.`)
     }
@@ -169,12 +188,33 @@ function connectBroker(broker: BrokerConfig) {
         if (n === 'ON' || n === 'OFF') data = { [type]: n }
       } else if (/^(VAR|MEM|RULETIMER)\d+$/i.test(type)) {
         data = { [type]: text.trim() }
+      } else if (/^WebButton\d+$/i.test(type)) {
+        data = { [type]: text.trim() }
       }
     }
     if (!data) return
 
     if (scope === 'tele' || scope === 'stat') {
       s.ingestMessage({ deviceId, scope, type, payload: data, brokerId })
+
+      const isPowerRelated =
+        type === 'STATE' ||
+        type === 'RESULT' ||
+        /^POWER\d*$/i.test(type) ||
+        /^STATUS\d*$/i.test(type)
+      if (isPowerRelated && client.connected) {
+        const now = Date.now()
+        const last = lastWebButtonRequestByDevice.get(deviceId) ?? 0
+        if (now - last >= WEBBUTTON_DEBOUNCE_MS) {
+          lastWebButtonRequestByDevice.set(deviceId, now)
+          const info = s.getDevice(deviceId)
+          const channels = info?.powerChannels ?? []
+          const targetTopic = info?.topic ?? deviceId
+          for (const ch of channels) {
+            client.publish(`cmnd/${targetTopic}/WebButton${ch.id}`, '', { qos: 0 })
+          }
+        }
+      }
     }
   })
 
@@ -188,6 +228,7 @@ export function stopListener(): void {
     client.end(true)
   }
   clientsByBrokerId.clear()
+  lastWebButtonRequestByDevice.clear()
   store?.setPersistFn(null)
   store?.setCommandSender(null)
   store = null

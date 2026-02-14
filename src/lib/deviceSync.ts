@@ -9,6 +9,18 @@ export function apiDevicesToHydrateSnapshots(
 ): HydrateSnapshot[] {
   return Object.entries(apiDevices).map(([deviceId, d]) => {
     const raw = (d.raw as Record<string, unknown> | undefined) ?? {}
+    const webButtonLabelsRaw = d.webButtonLabels as Record<string, string> | undefined
+    const webButtonLabels =
+      webButtonLabelsRaw && typeof webButtonLabelsRaw === 'object'
+        ? (() => {
+            const r: Record<number, string> = {}
+            for (const [k, v] of Object.entries(webButtonLabelsRaw)) {
+              const n = parseInt(k, 10)
+              if (Number.isFinite(n) && typeof v === 'string' && v.trim()) r[n] = v.trim()
+            }
+            return Object.keys(r).length > 0 ? r : undefined
+          })()
+        : undefined
     const rules = (d.rules as Record<number, { text: string; enabled: boolean; once: boolean; stopOnError: boolean }> | undefined)
     const backupItems = (d.backupItems as { createdAt: string; data: string }[] | undefined) ?? []
     const lastAt =
@@ -32,6 +44,7 @@ export function apiDevicesToHydrateSnapshots(
         signal: typeof d.signal === 'number' ? d.signal : undefined,
       },
       raw: Object.keys(raw).length > 0 ? raw : undefined,
+      webButtonLabels,
       rules: rules && Object.keys(rules).length > 0 ? rules : undefined,
       backups:
         (d.backupCount as number | undefined) != null || lastAt

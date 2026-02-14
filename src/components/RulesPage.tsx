@@ -12,6 +12,7 @@ type Props = {
   rules: Record<number, { text: string; enabled: boolean; once: boolean; stopOnError: boolean }>
   properties: Record<string, Record<string, unknown>>
   onRuleUpdate: (ruleId: number, patch: Partial<{ text: string; enabled: boolean; once: boolean; stopOnError: boolean }>) => void
+  onRuleChange?: (deviceId: string) => void
   onSendCommand: (deviceId: string, command: string, payload: string) => void
   onBack: () => void
 }
@@ -57,6 +58,7 @@ export default function RulesPage({
   rules,
   properties,
   onRuleUpdate,
+  onRuleChange,
   onSendCommand,
   onBack,
 }: Props) {
@@ -568,7 +570,7 @@ export default function RulesPage({
                             
                             // Save original text (with comments) and sent text (without comments) in DeviceState
                             DeviceState.updateRuleWithComments(device.id, rule, ruleText, textWithoutComments)
-                            
+                            onRuleChange?.(device.id)
                             if (textWithoutComments.trim()) {
                               // Send rule text without comments (Once and StopOnError are sent immediately when checkboxes change)
                               onSendCommand(device.id, `RULE${rule}`, textWithoutComments)

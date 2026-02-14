@@ -94,6 +94,38 @@ export async function fetchDevicesFromBackend(baseUrl?: string): Promise<Record<
   return (await res.json()) as Record<string, unknown>
 }
 
+export type RuleConfigPatch = {
+  text: string
+  enabled: boolean
+  once: boolean
+  stopOnError: boolean
+  originalText?: string
+  sentText?: string
+}
+
+/** Geräte-Infos (Auto-Backup, settingsUi, rules) über Backend aktualisieren – Backend-Store + CouchDB, damit SSE den neuen Stand sendet. */
+export async function patchDeviceInfo(
+  baseUrl: string | undefined,
+  deviceId: string,
+  patch: {
+    autoBackupIntervalDays?: number | null
+    settingsUi?: Record<string, unknown>
+    rules?: Record<number, RuleConfigPatch>
+  }
+): Promise<void> {
+  const url = `${(baseUrl ?? BACKEND_BASE).replace(/\/$/, '')}/devices/${encodeURIComponent(deviceId)}`
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error((data as { error?: string }).error ?? res.statusText)
+  }
+}
+
 /** Sendet einen MQTT-Befehl über das Backend (POST /api/command). */
 export async function sendCommand(
   baseUrl: string | undefined,
