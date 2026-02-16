@@ -1339,6 +1339,7 @@ export default function DeviceSettingsPage({
       customLinkDialogSlot === 1 ? { title, url } : (customLinkSlots[1] ?? {}),
     ]
     DeviceState.updateInfo(device.id, { deviceTypeCustomLinks: next })
+    DeviceState.triggerPersist(device.id)
     setCustomLinkDialogOpen(false)
   }, [device, customLinkDialogSlot, customLinkDialogTitle, customLinkDialogUrl, customLinkSlots])
 
@@ -1352,6 +1353,7 @@ export default function DeviceSettingsPage({
         slot === 1 ? {} : (customLinkSlots[1] ?? {}),
       ]
       DeviceState.updateInfo(device.id, { deviceTypeCustomLinks: next })
+      DeviceState.triggerPersist(device.id)
     },
     [device, customLinkSlots]
   )
