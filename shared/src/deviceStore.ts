@@ -606,13 +606,12 @@ export function createDeviceStore() {
       const backupCount = backups?.count ?? 0
       const backupItems = (backups?.items ?? [])
         .filter(
-          (item): item is { createdAt: string; data: string } =>
+          (item): item is { createdAt: string; data?: string } =>
             item != null &&
             typeof item === 'object' &&
-            typeof (item as { createdAt?: unknown }).createdAt === 'string' &&
-            typeof (item as { data?: unknown }).data === 'string'
+            typeof (item as { createdAt?: unknown }).createdAt === 'string'
         )
-        .map((item) => ({ createdAt: item.createdAt, data: item.data }))
+        .map((item) => ({ createdAt: item.createdAt, ...(typeof (item as { data?: unknown }).data === 'string' ? { data: (item as { data: string }).data } : {}) }))
       record.info = {
         ...record.info,
         name: snapshot.fields.name || record.info.name,

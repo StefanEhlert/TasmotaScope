@@ -24,7 +24,8 @@ export type DeviceInfo = {
   hasRaw?: boolean
   daysSinceBackup?: number | null
   backupCount?: number
-  backupItems?: { createdAt: string; data: string }[]
+  /** createdAt immer; data optional (Download ggf. per Backend-API). */
+  backupItems?: { createdAt: string; data?: string }[]
   autoBackupIntervalDays?: number | null
   settingsUi?: DeviceSettingsUi
 }
