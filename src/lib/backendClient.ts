@@ -22,6 +22,27 @@ export type BackupInfo = {
 export type BackendStatus = {
   couchdb: boolean
   brokers: Record<string, 'connected' | 'disconnected'>
+  BlakadderCrawlerSync?: boolean
+}
+
+export type BlakadderListItem = { id: string; label: string; image?: string; product?: string; model?: string; type?: string; category?: string }
+
+export async function getBlakadderList(baseUrl?: string): Promise<BlakadderListItem[]> {
+  const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/blakadder/list'
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) })
+  if (!res.ok) return []
+  const data = (await res.json()) as { list?: BlakadderListItem[] }
+  return Array.isArray(data.list) ? data.list : []
+}
+
+export async function postBlakadderSync(baseUrl?: string): Promise<void> {
+  const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/blakadder/sync'
+  const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(5000) })
+  if (res.status === 409) throw new Error('Crawler läuft bereits')
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error((body as { error?: string }).error ?? res.statusText)
+  }
 }
 
 const HEALTH_CACHE_MS = 45_000
@@ -109,6 +130,12 @@ export async function patchDeviceInfo(
   deviceId: string,
   patch: {
     autoBackupIntervalDays?: number | null
+    deviceType?: string
+    deviceTypeImages?: string[]
+    deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+    location?: string
+    room?: string
+    projectDescription?: string
     settingsUi?: Record<string, unknown>
     rules?: Record<number, RuleConfigPatch>
   }

@@ -2,6 +2,8 @@
 
 export type DeviceSettingsUi = {
   consoleExpanded?: boolean
+  /** Kurz-Infos (Topic, Modul, Firmware, …) aufgeklappt (Standard: true). */
+  shortInfoExpanded?: boolean
   collapsedBlockIds?: string[]
 }
 
@@ -27,6 +29,18 @@ export type DeviceInfo = {
   /** createdAt immer; data optional (Download ggf. per Backend-API). */
   backupItems?: { createdAt: string; data?: string }[]
   autoBackupIntervalDays?: number | null
+  /** Gerätetyp (Blakadder-id oder Freitext). */
+  deviceType?: string
+  /** Vom Nutzer hinzugefügte Bild-URLs (Data-URLs oder externe URLs) für die Gerätetyp-Anzeige. */
+  deviceTypeImages?: string[]
+  /** Bis zu 2 benutzerdefinierte Links (Titel + URL) unter dem Gerätetyp-Button. */
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  /** Standort (z. B. Gebäude / Etage). */
+  location?: string
+  /** Raum (z. B. Wohnzimmer). */
+  room?: string
+  /** Kurze Beschreibung des Projektes. */
+  projectDescription?: string
   settingsUi?: DeviceSettingsUi
 }
 
@@ -65,5 +79,11 @@ export type PersistSnapshot = {
   webButtonLabels?: Record<number, string>
   rules?: Record<number, RuleConfig>
   autoBackupIntervalDays?: number | null
+  deviceType?: string
+  deviceTypeImages?: string[]
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  location?: string
+  room?: string
+  projectDescription?: string
   settingsUi?: DeviceSettingsUi
 }

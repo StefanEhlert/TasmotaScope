@@ -87,10 +87,14 @@ function App() {
   const settingsRef = useRef<AppSettings>(defaultSettings)
   const lastRulesLoadRef = useRef<string | null>(null)
   const lastSettingsWebButtonRequestRef = useRef<string | null>(null)
+  const lastSettingsModuleRequestRef = useRef<string | null>(null)
+  const lastSettingsWebColorRequestRef = useRef<string | null>(null)
   /** Verhindert, dass ein veraltetes SSE-Update eine gerade gesetzte Auto-Backup-Änderung überschreibt. */
   const lastAutoBackupUpdateRef = useRef<{ deviceId: string; value: number | null; at: number } | null>(null)
   /** Verhindert, dass ein veraltetes SSE-Update gerade gespeicherte Rules überschreibt. */
   const lastRulesUpdateRef = useRef<{ deviceId: string; at: number } | null>(null)
+  /** Verhindert, dass Poll/SSE einen gerade gespeicherten Gerätetyp mit veralteten Backend-Daten überschreibt. */
+  const lastDeviceTypeUpdateRef = useRef<{ deviceId: string; value: string | undefined; at: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -211,6 +215,12 @@ function App() {
     DeviceState.setPersistFn((snapshot) => {
       return patchDeviceInfo(undefined, snapshot.deviceId, {
         autoBackupIntervalDays: snapshot.autoBackupIntervalDays,
+        deviceType: snapshot.deviceType,
+        deviceTypeImages: snapshot.deviceTypeImages,
+        deviceTypeCustomLinks: snapshot.deviceTypeCustomLinks,
+        location: snapshot.location,
+        room: snapshot.room,
+        projectDescription: snapshot.projectDescription,
         settingsUi: snapshot.settingsUi,
       })
     })
@@ -224,6 +234,9 @@ function App() {
 
     const apply = (data: Record<string, unknown>) => {
       if (cancelled) return
+      if (data.BlakadderCrawlerSync !== undefined && Object.keys(data).every((k) => k === 'BlakadderCrawlerSync')) {
+        return
+      }
       const asRecord = data as Record<string, Record<string, unknown>>
       const recent = lastAutoBackupUpdateRef.current
       if (recent && Date.now() - recent.at < 3000 && asRecord[recent.deviceId]) {
@@ -241,6 +254,21 @@ function App() {
             rules: currentRules,
           }
         }
+      }
+      const recentDeviceType = lastDeviceTypeUpdateRef.current
+      if (recentDeviceType && asRecord[recentDeviceType.deviceId]) {
+        const incoming = asRecord[recentDeviceType.deviceId].deviceType as string | undefined
+        if (incoming === recentDeviceType.value) {
+          lastDeviceTypeUpdateRef.current = null
+        } else {
+          asRecord[recentDeviceType.deviceId] = {
+            ...asRecord[recentDeviceType.deviceId],
+            deviceType: recentDeviceType.value,
+          }
+        }
+      }
+      if (lastDeviceTypeUpdateRef.current && lastDeviceTypeUpdateRef.current.at < Date.now() - 60_000) {
+        lastDeviceTypeUpdateRef.current = null
       }
       setLastApiDevices(asRecord)
       const snapshots = apiDevicesToHydrateSnapshots(asRecord)
@@ -304,16 +332,28 @@ function App() {
   useEffect(() => {
     if (!settingsDeviceId) {
       lastSettingsWebButtonRequestRef.current = null
+      lastSettingsModuleRequestRef.current = null
+      lastSettingsWebColorRequestRef.current = null
       return
     }
     const device = devices[settingsDeviceId]
-    if (!device?.powerChannels?.length || lastSettingsWebButtonRequestRef.current === settingsDeviceId) return
-    lastSettingsWebButtonRequestRef.current = settingsDeviceId
+    if (!device) return
     const targetTopic = device.topic || device.id
-    for (const ch of device.powerChannels) {
-      if (ch.label === undefined) {
-        void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebButton${ch.id}`, '').catch(() => {})
+    if (device.powerChannels?.length && lastSettingsWebButtonRequestRef.current !== settingsDeviceId) {
+      lastSettingsWebButtonRequestRef.current = settingsDeviceId
+      for (const ch of device.powerChannels) {
+        if (ch.label === undefined) {
+          void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebButton${ch.id}`, '').catch(() => {})
+        }
       }
+    }
+    if (lastSettingsModuleRequestRef.current !== settingsDeviceId) {
+      lastSettingsModuleRequestRef.current = settingsDeviceId
+      void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/Template`, '').catch(() => {})
+    }
+    if (lastSettingsWebColorRequestRef.current !== settingsDeviceId) {
+      lastSettingsWebColorRequestRef.current = settingsDeviceId
+      void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebColor`, '').catch(() => {})
     }
   }, [settingsDeviceId, devices])
 
@@ -822,6 +862,7 @@ function App() {
         {settingsDeviceId ? (
           <DeviceSettingsPage
             device={settingsDeviceId ? devices[settingsDeviceId] ?? null : null}
+            allDevices={devices}
             consoleLines={settingsDeviceId ? ((lastApiDevices[settingsDeviceId]?.console as string[]) ?? []) : []}
             onSendCommand={(deviceId, command, payload) => {
               const device = devicesRef.current[deviceId]
@@ -837,6 +878,9 @@ function App() {
             backingUp={backingUp}
             backendAvailable={backendAvailable}
             onBack={() => setSettingsDeviceId(null)}
+            onDeviceTypeApplied={(deviceId, value) => {
+              lastDeviceTypeUpdateRef.current = { deviceId, value, at: Date.now() }
+            }}
           />
         ) : rulesDeviceId ? (
           <RulesPage

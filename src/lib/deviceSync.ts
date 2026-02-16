@@ -58,6 +58,23 @@ export function apiDevicesToHydrateSnapshots(
         d.autoBackupIntervalDays !== undefined && d.autoBackupIntervalDays !== null
           ? (d.autoBackupIntervalDays as number)
           : undefined,
+      deviceType: typeof d.deviceType === 'string' ? d.deviceType : undefined,
+      deviceTypeImages: Array.isArray(d.deviceTypeImages)
+        ? (d.deviceTypeImages as unknown[]).filter((v): v is string => typeof v === 'string')
+        : undefined,
+      deviceTypeCustomLinks: (() => {
+        const arr = d.deviceTypeCustomLinks
+        if (!Array.isArray(arr) || arr.length < 2) return undefined
+        const s0 = arr[0] && typeof arr[0] === 'object' ? arr[0] as Record<string, unknown> : {}
+        const s1 = arr[1] && typeof arr[1] === 'object' ? arr[1] as Record<string, unknown> : {}
+        return [
+          { title: typeof s0.title === 'string' ? s0.title.trim() : undefined, url: typeof s0.url === 'string' ? s0.url.trim() : undefined },
+          { title: typeof s1.title === 'string' ? s1.title.trim() : undefined, url: typeof s1.url === 'string' ? s1.url.trim() : undefined },
+        ]
+      })(),
+      location: d.location != null && String(d.location).trim() !== '' ? String(d.location).trim() : undefined,
+      room: d.room != null && String(d.room).trim() !== '' ? String(d.room).trim() : undefined,
+      projectDescription: d.projectDescription != null && String(d.projectDescription).trim() !== '' ? String(d.projectDescription).trim() : undefined,
       settingsUi: (d.settingsUi as HydrateSnapshot['settingsUi']) ?? undefined,
     } satisfies HydrateSnapshot
   })

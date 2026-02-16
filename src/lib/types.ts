@@ -31,6 +31,8 @@ export type BrokerConfig = {
 export type DeviceSettingsUi = {
   /** Konsole aufgeklappt (Standard: true). */
   consoleExpanded?: boolean
+  /** Kurz-Infos (Topic, Modul, Firmware, …) aufgeklappt (Standard: true). */
+  shortInfoExpanded?: boolean
   /** IDs eingeklappter Bereiche (Sensoren, Schaltkanäle, Config-Blöcke). Leer = alle aufgeklappt. */
   collapsedBlockIds?: string[]
 }
@@ -58,6 +60,18 @@ export type DeviceInfo = {
   backupItems?: { createdAt: string; data?: string }[]
   /** Automatisches Backup: Intervall in Tagen (null/undefined = aus). */
   autoBackupIntervalDays?: number | null
+  /** Gerätetyp (Blakadder-id oder Freitext). */
+  deviceType?: string
+  /** Bilder für Gerätetyp (URLs). */
+  deviceTypeImages?: string[]
+  /** Bis zu 2 benutzerdefinierte Links (Titel + URL) unter dem Gerätetyp-Button. */
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  /** Standort (z. B. Gebäude / Etage). */
+  location?: string
+  /** Raum (z. B. Wohnzimmer). */
+  room?: string
+  /** Kurze Beschreibung des Projektes. */
+  projectDescription?: string
   /** Gespeicherter Zustand der Einstellungsseite (Konsole + Bereiche). */
   settingsUi?: DeviceSettingsUi
 }

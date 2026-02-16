@@ -61,6 +61,12 @@ export type PersistSnapshot = {
   webButtonLabels?: Record<number, string>
   rules?: Record<number, RuleConfig>
   autoBackupIntervalDays?: number | null
+  deviceType?: string
+  deviceTypeImages?: string[]
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  location?: string
+  room?: string
+  projectDescription?: string
   settingsUi?: DeviceSettingsUi
 }
 
@@ -326,9 +332,15 @@ export async function upsertDeviceSnapshot(
   let existingBackups: DeviceBackups | undefined
   let existingSettingsUi: DeviceSettingsUi | undefined
   let existingAutoBackupIntervalDays: number | null | undefined
+  let existingDeviceType: string | undefined
+  let existingDeviceTypeImages: string[] | undefined
+  let existingDeviceTypeCustomLinks: Array<{ title?: string; url?: string }> | undefined
 
   let existingRules: Record<number, RuleConfig> | undefined
   let existingWebButtonLabels: Record<string, string> | undefined
+  let existingLocation: string | undefined
+  let existingRoom: string | undefined
+  let existingProjectDescription: string | undefined
   const getResponse = await fetch(docPath, { method: 'GET', headers })
   if (getResponse.ok) {
     const existing = (await getResponse.json()) as {
@@ -336,6 +348,12 @@ export async function upsertDeviceSnapshot(
       backups?: DeviceBackups
       settingsUi?: DeviceSettingsUi
       autoBackupIntervalDays?: number | null
+      deviceType?: string
+      deviceTypeImages?: string[]
+      deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+      location?: string
+      room?: string
+      projectDescription?: string
       rules?: Record<string, RuleConfig>
       webButtonLabels?: Record<string, string>
     }
@@ -343,6 +361,19 @@ export async function upsertDeviceSnapshot(
     existingBackups = existing.backups
     existingSettingsUi = existing.settingsUi
     existingAutoBackupIntervalDays = existing.autoBackupIntervalDays
+    existingDeviceType = typeof existing.deviceType === 'string' ? existing.deviceType : undefined
+    existingDeviceTypeImages = Array.isArray(existing.deviceTypeImages)
+      ? (existing.deviceTypeImages as unknown[]).filter((v): v is string => typeof v === 'string')
+      : undefined
+    if (Array.isArray(existing.deviceTypeCustomLinks) && existing.deviceTypeCustomLinks.length >= 2) {
+      const a = existing.deviceTypeCustomLinks as unknown[]
+      const s0 = a[0] && typeof a[0] === 'object' ? a[0] as Record<string, unknown> : {}
+      const s1 = a[1] && typeof a[1] === 'object' ? a[1] as Record<string, unknown> : {}
+      existingDeviceTypeCustomLinks = [
+        { title: typeof s0.title === 'string' ? s0.title.trim() : undefined, url: typeof s0.url === 'string' ? s0.url.trim() : undefined },
+        { title: typeof s1.title === 'string' ? s1.title.trim() : undefined, url: typeof s1.url === 'string' ? s1.url.trim() : undefined },
+      ]
+    }
     if (existing.webButtonLabels && typeof existing.webButtonLabels === 'object') {
       existingWebButtonLabels = existing.webButtonLabels
     }
@@ -356,6 +387,9 @@ export async function upsertDeviceSnapshot(
       }
       existingRules = Object.keys(numRules).length > 0 ? numRules : undefined
     }
+    if (typeof existing.location === 'string') existingLocation = existing.location.trim() || undefined
+    if (typeof existing.room === 'string') existingRoom = existing.room.trim() || undefined
+    if (typeof existing.projectDescription === 'string') existingProjectDescription = existing.projectDescription.trim() || undefined
     if (rev) deviceRevCache.set(docId, rev)
   }
 
@@ -390,6 +424,18 @@ export async function upsertDeviceSnapshot(
     ...((snapshot.autoBackupIntervalDays !== undefined || existingAutoBackupIntervalDays !== undefined)
       ? { autoBackupIntervalDays: snapshot.autoBackupIntervalDays ?? existingAutoBackupIntervalDays ?? null }
       : {}),
+    ...((snapshot.deviceType !== undefined || existingDeviceType !== undefined)
+      ? { deviceType: snapshot.deviceType ?? existingDeviceType ?? undefined }
+      : {}),
+    ...((snapshot.deviceTypeImages !== undefined || existingDeviceTypeImages !== undefined)
+      ? { deviceTypeImages: snapshot.deviceTypeImages ?? existingDeviceTypeImages ?? [] }
+      : {}),
+    ...((snapshot.deviceTypeCustomLinks !== undefined || existingDeviceTypeCustomLinks !== undefined)
+      ? { deviceTypeCustomLinks: snapshot.deviceTypeCustomLinks ?? existingDeviceTypeCustomLinks }
+      : {}),
+    location: typeof snapshot.location === 'string' ? snapshot.location.trim() || undefined : existingLocation,
+    room: typeof snapshot.room === 'string' ? snapshot.room.trim() || undefined : existingRoom,
+    projectDescription: typeof snapshot.projectDescription === 'string' ? snapshot.projectDescription.trim() || undefined : existingProjectDescription,
   }
 
   const putResponse = await fetch(docPath, {
@@ -450,6 +496,12 @@ export type DeviceSnapshotForHydrate = {
   rules?: Record<number, RuleConfig>
   backups?: { count: number; lastAt: string | null; items?: unknown[] }
   autoBackupIntervalDays?: number | null
+  deviceType?: string
+  deviceTypeImages?: string[]
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  location?: string
+  room?: string
+  projectDescription?: string
   settingsUi?: DeviceSettingsUi
 }
 
@@ -477,4 +529,55 @@ export async function fetchDeviceSnapshots(
   }
   const rows = payload.rows?.map((row) => row.doc).filter(Boolean) ?? []
   return rows as DeviceSnapshotForHydrate[]
+}
+
+const CONFIG_DOC_PREFIX = 'config:'
+
+/** Liest ein Konfigurationsdokument (z. B. config:blakadder_templates). */
+export async function getConfigDoc<T = Record<string, unknown>>(
+  settings: CouchDbSettings,
+  docId: string
+): Promise<(T & { _id?: string; _rev?: string }) | null> {
+  const baseUrl = buildBaseUrl(settings)
+  const headers = { Authorization: buildAuthHeader(settings) }
+  const dbName = encodeURIComponent(settings.database)
+  const id = docId.startsWith(CONFIG_DOC_PREFIX) ? docId : CONFIG_DOC_PREFIX + docId
+  const res = await fetch(`${baseUrl}/${dbName}/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    headers,
+  })
+  if (res.status === 404) return null
+  if (!res.ok) {
+    throw new Error(`CouchDB Config lesen fehlgeschlagen: ${await res.text()}`)
+  }
+  return (await res.json()) as T & { _id?: string; _rev?: string }
+}
+
+/** Schreibt ein Konfigurationsdokument (überschreibt vorhandenes). */
+export async function putConfigDoc(
+  settings: CouchDbSettings,
+  docId: string,
+  doc: Record<string, unknown>
+): Promise<void> {
+  const baseUrl = buildBaseUrl(settings)
+  const headers = {
+    Authorization: buildAuthHeader(settings),
+    'Content-Type': 'application/json',
+  }
+  const dbName = encodeURIComponent(settings.database)
+  const id = docId.startsWith(CONFIG_DOC_PREFIX) ? docId : CONFIG_DOC_PREFIX + docId
+  const existing = await getConfigDoc(settings, docId)
+  const payload = {
+    _id: id,
+    ...(existing?._rev ? { _rev: existing._rev } : {}),
+    ...doc,
+  }
+  const res = await fetch(`${baseUrl}/${dbName}/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(`CouchDB Config schreiben fehlgeschlagen: ${await res.text()}`)
+  }
 }

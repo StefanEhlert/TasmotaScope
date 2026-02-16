@@ -102,6 +102,16 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
           rules: doc.rules,
           backups: doc.backups,
           autoBackupIntervalDays: doc.autoBackupIntervalDays,
+          deviceType: doc.deviceType,
+          deviceTypeImages: Array.isArray(doc.deviceTypeImages)
+            ? (doc.deviceTypeImages as unknown[]).filter((v): v is string => typeof v === 'string')
+            : undefined,
+          deviceTypeCustomLinks: Array.isArray(doc.deviceTypeCustomLinks) && doc.deviceTypeCustomLinks.length >= 2
+            ? doc.deviceTypeCustomLinks
+            : undefined,
+          location: typeof doc.location === 'string' ? doc.location.trim() || undefined : undefined,
+          room: typeof doc.room === 'string' ? doc.room.trim() || undefined : undefined,
+          projectDescription: typeof doc.projectDescription === 'string' ? doc.projectDescription.trim() || undefined : undefined,
           settingsUi: doc.settingsUi,
         }
       })

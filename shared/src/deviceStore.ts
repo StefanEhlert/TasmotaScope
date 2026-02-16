@@ -69,11 +69,18 @@ function mergeSettingsUi(
   return merged
 }
 
+/** Keys that may be explicitly cleared (empty string / undefined). */
+const CLEARABLE_INFO_KEYS = new Set(['location', 'room', 'projectDescription'])
+
 function mergeInfo(current: DeviceInfo, patch: Partial<DeviceInfo>): DeviceInfo {
   const next: DeviceInfo = { ...current }
   Object.entries(patch).forEach(([key, value]) => {
     if (key === 'autoBackupIntervalDays') {
       ;(next as Record<string, unknown>)[key] = value ?? null
+      return
+    }
+    if (CLEARABLE_INFO_KEYS.has(key)) {
+      ;(next as Record<string, unknown>)[key] = value === '' ? undefined : value
       return
     }
     if (value === undefined || value === null || value === '') return
@@ -315,6 +322,12 @@ export type HydrateSnapshot = {
   rules?: Record<number, RuleConfig>
   backups?: { count: number; lastAt: string | null; items?: unknown[] }
   autoBackupIntervalDays?: number | null
+  deviceType?: string
+  deviceTypeImages?: string[]
+  deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+  location?: string
+  room?: string
+  projectDescription?: string
   settingsUi?: DeviceSettingsUi
 }
 
@@ -369,6 +382,12 @@ export function createDeviceStore() {
     webButtonLabels: record.webButtonLabels && Object.keys(record.webButtonLabels).length > 0 ? record.webButtonLabels : undefined,
     rules: Object.keys(record.rules).length > 0 ? record.rules : undefined,
     autoBackupIntervalDays: record.info.autoBackupIntervalDays,
+    deviceType: record.info.deviceType,
+    deviceTypeImages: record.info.deviceTypeImages,
+    deviceTypeCustomLinks: record.info.deviceTypeCustomLinks,
+    location: record.info.location,
+    room: record.info.room,
+    projectDescription: record.info.projectDescription,
     settingsUi: record.info.settingsUi,
   })
 
@@ -415,6 +434,13 @@ export function createDeviceStore() {
         persistInterval = null
       }
     }, 10_000)
+  }
+
+  /** Sofort-Persist für ein Gerät auslösen (z. B. nach Standort/Raum-Änderung). Nur wenn brokerId gesetzt. */
+  const triggerPersist = (deviceId: string) => {
+    const record = devices.get(deviceId)
+    if (!record || !record.info.brokerId || !persistFn) return
+    enqueuePersistSnapshot(deviceId, buildSnapshot(record))
   }
 
   const scheduleInitialPolling = (deviceId: string) => {
@@ -530,10 +556,37 @@ export function createDeviceStore() {
 
     if (scope === 'stat' && type === 'RESULT') {
       const moduleValue = payloadAny.Module ?? payloadAny.ModuleName ?? payloadAny.Modules
+      const templateValue = payloadAny.Template
+      if (templateValue && typeof templateValue === 'object') {
+        const tplObj = templateValue as Record<string, unknown>
+        if (Array.isArray(tplObj.GPIO)) {
+          const existing = (record.raw['stat/Template'] as Record<string, unknown> | undefined) ?? {}
+          record.raw['stat/Template'] = { ...existing, ...tplObj }
+        }
+      } else if (Array.isArray(payloadAny.GPIO) && payloadAny.NAME != null) {
+        const existing = (record.raw['stat/Template'] as Record<string, unknown> | undefined) ?? {}
+        record.raw['stat/Template'] = { ...existing, NAME: payloadAny.NAME, GPIO: payloadAny.GPIO, FLAG: payloadAny.FLAG, BASE: payloadAny.BASE }
+      }
+      const webColorRaw = payloadAny.WebColor ?? (payloadAny as Record<string, unknown>).webcolor
+      let webColorArray: unknown[] | undefined
+      if (Array.isArray(webColorRaw)) {
+        webColorArray = webColorRaw.filter((c): c is string => typeof c === 'string')
+      } else if (typeof webColorRaw === 'string') {
+        webColorArray = webColorRaw.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean)
+      }
+      if (webColorArray && webColorArray.length > 0) {
+        record.raw['stat/WebColor'] = { WebColor: webColorArray }
+      }
       let moduleName: string | undefined
       if (typeof moduleValue === 'string') moduleName = moduleValue
-      else if (moduleValue && typeof moduleValue === 'object')
-        moduleName = typeof (Object.values(moduleValue as object)[0]) === 'string' ? (Object.values(moduleValue as object)[0] as string) : undefined
+      else if (moduleValue && typeof moduleValue === 'object') {
+        const modObj = moduleValue as Record<string, unknown>
+        if (Array.isArray(modObj.GPIO)) {
+          if (typeof modObj.NAME === 'string') moduleName = modObj.NAME
+        }
+        if (moduleName === undefined)
+          moduleName = typeof (Object.values(moduleValue as object)[0]) === 'string' ? (Object.values(moduleValue as object)[0] as string) : undefined
+      }
       if (moduleName) record.info = mergeInfo(record.info, { module: moduleName })
       record.info.powerChannels = resolvePowerChannelsFromRaw(record.raw, record.webButtonLabels)
     }
@@ -631,6 +684,13 @@ export function createDeviceStore() {
         // Backend/CouchDB is source of truth: do not carry over previous value when snapshot omits it
         autoBackupIntervalDays:
           snapshot.autoBackupIntervalDays !== undefined ? snapshot.autoBackupIntervalDays : undefined,
+        deviceType: snapshot.deviceType !== undefined ? snapshot.deviceType : record.info.deviceType,
+        deviceTypeImages: snapshot.deviceTypeImages !== undefined ? snapshot.deviceTypeImages : record.info.deviceTypeImages,
+        deviceTypeCustomLinks:
+          snapshot.deviceTypeCustomLinks !== undefined ? snapshot.deviceTypeCustomLinks : record.info.deviceTypeCustomLinks,
+        location: snapshot.location !== undefined ? snapshot.location : record.info.location,
+        room: snapshot.room !== undefined ? snapshot.room : record.info.room,
+        projectDescription: snapshot.projectDescription !== undefined ? snapshot.projectDescription : record.info.projectDescription,
         settingsUi: mergeSettingsUi(record.info.settingsUi, snapshot.settingsUi),
       }
       record.raw = snapshot.raw ?? {}
@@ -728,6 +788,7 @@ export function createDeviceStore() {
       else { set.delete(ruleId); if (set.size === 0) editingRules.delete(deviceId) }
     },
     setPersistFn(fn: PersistFn | null) { persistFn = fn },
+    triggerPersist(deviceId: string) { triggerPersist(deviceId) },
     setCommandSender(fn: CommandSender | null) { commandSender = fn },
     updateInfo(deviceId: string, patch: Partial<DeviceInfo>) {
       const record = ensureDevice(deviceId)

@@ -22,6 +22,7 @@ export const DeviceState = {
   updateRuleWithComments: store.updateRuleWithComments.bind(store),
   setRuleEditing: store.setRuleEditing.bind(store),
   setPersistFn: store.setPersistFn.bind(store),
+  triggerPersist: (deviceId: string) => (store as unknown as { triggerPersist: (id: string) => void }).triggerPersist(deviceId),
   setCommandSender: store.setCommandSender.bind(store),
   updateInfo: store.updateInfo.bind(store),
   updateSettingsUi: store.updateSettingsUi.bind(store),

@@ -12,6 +12,12 @@ import {
   type BrokerConfig,
 } from './couchDb.js'
 import {
+  buildBlakadderList,
+  getBlakadderTemplates,
+  runBlakadderSync,
+  runBlakadderSyncIfStale,
+} from './blakadder.js'
+import {
   getBrokerConnectionStatus,
   getDeviceConsoleLines,
   getDeviceStore,
@@ -75,17 +81,39 @@ async function testCouchDbConnection(settings: CouchDbSettings): Promise<boolean
   }
 }
 
+/** Läuft der Blakadder-Crawler (templates.blakadder.com)? Über SSE an Frontend senden. */
+let blakadderCrawlerSync = false
+
+function setBlakadderCrawlerSync(running: boolean): void {
+  if (blakadderCrawlerSync === running) return
+  blakadderCrawlerSync = running
+  broadcastBlakadderSyncToSSE()
+}
+
+function broadcastBlakadderSyncToSSE(): void {
+  const payload = `data: ${JSON.stringify({ BlakadderCrawlerSync: blakadderCrawlerSync })}\n\n`
+  for (const { res } of sseClients) {
+    try {
+      res.write(payload)
+      const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+      if (sock?.flush) sock.flush()
+    } catch {
+      // Client evtl. getrennt
+    }
+  }
+}
+
 const statusRouter = Router()
 
 statusRouter.get('/status', async (_req: Request, res: Response) => {
   const couchdb = getCouchDb()
   const brokers = getBrokerConnectionStatus()
   if (!couchdb) {
-    res.json({ couchdb: false, brokers })
+    res.json({ couchdb: false, brokers, BlakadderCrawlerSync: blakadderCrawlerSync })
     return
   }
   const ok = await testCouchDbConnection(couchdb)
-  res.json({ couchdb: ok, brokers })
+  res.json({ couchdb: ok, brokers, BlakadderCrawlerSync: blakadderCrawlerSync })
 })
 
 function devicesWithConsole(): Record<string, Record<string, unknown>> {
@@ -98,8 +126,12 @@ function devicesWithConsole(): Record<string, Record<string, unknown>> {
   for (const [id, info] of Object.entries(snapshot)) {
     const record = map.get(id)
     const base = typeof info === 'object' && info !== null ? { ...info } : {}
+    const infoObj = base as Record<string, unknown>
     out[id] = {
       ...base,
+      location: infoObj.location,
+      room: infoObj.room,
+      projectDescription: infoObj.projectDescription,
       console: consoles[id] ?? [],
       ...(record ? { raw: record.raw, rules: record.rules, webButtonLabels: record.webButtonLabels } : {}),
     }
@@ -181,7 +213,16 @@ statusRouter.patch('/devices/:deviceId', async (req: Request, res: Response) => 
     return
   }
   const body = req.body as Record<string, unknown>
-  const patch: { autoBackupIntervalDays?: number | null; settingsUi?: Record<string, unknown> } = {}
+  const patch: {
+    autoBackupIntervalDays?: number | null
+    settingsUi?: Record<string, unknown>
+    deviceType?: string
+    deviceTypeImages?: string[]
+    deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+    location?: string
+    room?: string
+    projectDescription?: string
+  } = {}
   if (body.autoBackupIntervalDays !== undefined) {
     patch.autoBackupIntervalDays =
       body.autoBackupIntervalDays === null || body.autoBackupIntervalDays === ''
@@ -190,6 +231,32 @@ statusRouter.patch('/devices/:deviceId', async (req: Request, res: Response) => 
   }
   if (body.settingsUi !== undefined && body.settingsUi !== null && typeof body.settingsUi === 'object') {
     patch.settingsUi = body.settingsUi as Record<string, unknown>
+  }
+  if (body.deviceType !== undefined) {
+    patch.deviceType = typeof body.deviceType === 'string' ? body.deviceType.trim() || undefined : undefined
+  }
+  if (body.deviceTypeImages !== undefined) {
+    patch.deviceTypeImages = Array.isArray(body.deviceTypeImages)
+      ? (body.deviceTypeImages as unknown[]).filter((v): v is string => typeof v === 'string')
+      : undefined
+  }
+  if (body.deviceTypeCustomLinks !== undefined && Array.isArray(body.deviceTypeCustomLinks) && body.deviceTypeCustomLinks.length >= 2) {
+    const arr = body.deviceTypeCustomLinks as unknown[]
+    const slot0 = arr[0] && typeof arr[0] === 'object' ? arr[0] as Record<string, unknown> : {}
+    const slot1 = arr[1] && typeof arr[1] === 'object' ? arr[1] as Record<string, unknown> : {}
+    patch.deviceTypeCustomLinks = [
+      { title: typeof slot0.title === 'string' ? slot0.title.trim() : undefined, url: typeof slot0.url === 'string' ? slot0.url.trim() : undefined },
+      { title: typeof slot1.title === 'string' ? slot1.title.trim() : undefined, url: typeof slot1.url === 'string' ? slot1.url.trim() : undefined },
+    ]
+  }
+  if (body.location !== undefined) {
+    patch.location = typeof body.location === 'string' ? body.location.trim() || undefined : undefined
+  }
+  if (body.room !== undefined) {
+    patch.room = typeof body.room === 'string' ? body.room.trim() || undefined : undefined
+  }
+  if (body.projectDescription !== undefined) {
+    patch.projectDescription = typeof body.projectDescription === 'string' ? body.projectDescription.trim() || undefined : undefined
   }
   if (body.rules !== undefined && body.rules !== null && typeof body.rules === 'object') {
     const rulesObj = body.rules as Record<string, unknown>
@@ -209,13 +276,16 @@ statusRouter.patch('/devices/:deviceId', async (req: Request, res: Response) => 
     }
     store.replaceRules(deviceId, rules)
   }
-  if (Object.keys(patch).length === 0 && (body.rules === undefined || body.rules === null)) {
+  if (
+    Object.keys(patch).length === 0 &&
+    (body.rules === undefined || body.rules === null)
+  ) {
     res.json({ ok: true })
     return
   }
   try {
     if (Object.keys(patch).length > 0) {
-      store.updateInfo(deviceId, patch)
+      store.updateInfo(deviceId, patch as Parameters<typeof store.updateInfo>[1])
     }
     const snapshot = store.buildSnapshotForDevice(deviceId)
     if (snapshot) {
@@ -357,12 +427,48 @@ statusRouter.post('/config/couchdb', async (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
+/** Geräteliste von Blakadder (id + label für Combobox). */
+statusRouter.get('/blakadder/list', async (_req: Request, res: Response) => {
+  const couchdb = getCouchDb()
+  if (!couchdb) {
+    res.status(503).json({ error: 'CouchDB nicht konfiguriert' })
+    return
+  }
+  try {
+    const doc = await getBlakadderTemplates(couchdb)
+    const list = buildBlakadderList(doc)
+    res.json({ list })
+  } catch (err) {
+    console.error('[GET /blakadder/list]', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Liste laden fehlgeschlagen' })
+  }
+})
+
+/** Crawler starten (asynchron); Status BlakadderCrawlerSync wird per SSE/GET status gesendet. */
+statusRouter.post('/blakadder/sync', async (_req: Request, res: Response) => {
+  const couchdb = getCouchDb()
+  if (!couchdb) {
+    res.status(503).json({ error: 'CouchDB nicht konfiguriert' })
+    return
+  }
+  if (blakadderCrawlerSync) {
+    res.status(409).json({ error: 'Crawler läuft bereits' })
+    return
+  }
+  res.status(202).json({ ok: true, message: 'Sync gestartet' })
+  runBlakadderSync(couchdb, setBlakadderCrawlerSync).catch((err) => {
+    console.error('[Blakadder Sync]', err)
+    setBlakadderCrawlerSync(false)
+  })
+})
+
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 app.use('/api', statusRouter)
 app.use('/api', backupRouter)
 
 const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 Stunden
+const BLAKADDER_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 Stunden
 
 app.listen(PORT, () => {
   console.log(`TasmotaScope Backend listening on port ${PORT}`)
@@ -372,16 +478,28 @@ app.listen(PORT, () => {
     ensureCouchDbInitialized(couchdb)
       .then(() => startListener(couchdb))
       .catch((err) => console.error('[Listener] Start fehlgeschlagen:', err))
-    const run = () => {
+    const runBackup = () => {
       const c = getCouchDb()
       if (!c) return
       runScheduledAutoBackups(c).catch((err) => {
         console.error('[Auto-Backup] Scheduler-Fehler:', err)
       })
     }
-    setTimeout(run, 60_000)
-    setInterval(run, AUTO_BACKUP_INTERVAL_MS)
+    setTimeout(runBackup, 60_000)
+    setInterval(runBackup, AUTO_BACKUP_INTERVAL_MS)
     console.log('Auto-Backup-Scheduler aktiv (alle 24 h)')
+
+    const runBlakadderCheck = () => {
+      const c = getCouchDb()
+      if (!c) return
+      runBlakadderSyncIfStale(c, setBlakadderCrawlerSync).catch((err) => {
+        console.error('[Blakadder] Auto-Check fehlgeschlagen:', err)
+        setBlakadderCrawlerSync(false)
+      })
+    }
+    runBlakadderCheck()
+    setInterval(runBlakadderCheck, BLAKADDER_CHECK_INTERVAL_MS)
+    console.log('Blakadder-Check aktiv (beim Start + alle 24 h)')
   } else {
     console.log('Auto-Backup-Scheduler inaktiv (COUCHDB_HOST und COUCHDB_DATABASE nicht gesetzt)')
   }
