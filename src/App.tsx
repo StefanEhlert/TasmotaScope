@@ -17,6 +17,7 @@ import {
   postCouchDbConfig,
   putBroker,
   requestBackup,
+  requestBackupDownload,
   requestDeleteBackup,
   sendCommand,
 } from './lib/backendClient'
@@ -310,7 +311,9 @@ function App() {
     lastSettingsWebButtonRequestRef.current = settingsDeviceId
     const targetTopic = device.topic || device.id
     for (const ch of device.powerChannels) {
-      void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebButton${ch.id}`, '').catch(() => {})
+      if (ch.label === undefined) {
+        void sendCommand(undefined, settingsDeviceId, `cmnd/${targetTopic}/WebButton${ch.id}`, '').catch(() => {})
+      }
     }
   }, [settingsDeviceId, devices])
 
@@ -418,6 +421,19 @@ function App() {
     } finally {
       setBackingUp((prev) => ({ ...prev, [deviceId]: false }))
     }
+  }
+
+  const handleDownloadBackup = async (
+    deviceId: string,
+    brokerId: string | undefined,
+    index: number,
+  ): Promise<string> => {
+    return requestBackupDownload(undefined, {
+      deviceId,
+      brokerId,
+      couchdb: settingsRef.current.couchdb,
+      index,
+    })
   }
 
   const openDeleteBackupDialog = (deviceId: string, index: number) => {
@@ -815,6 +831,7 @@ function App() {
             }}
             onTogglePower={sendPowerToggle}
             onBackup={handleBackup}
+            onDownloadBackup={handleDownloadBackup}
             onDeleteBackup={openDeleteBackupDialog}
             onUpdateAutoBackup={handleUpdateAutoBackup}
             backingUp={backingUp}

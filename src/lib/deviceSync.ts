@@ -16,7 +16,7 @@ export function apiDevicesToHydrateSnapshots(
             const r: Record<number, string> = {}
             for (const [k, v] of Object.entries(webButtonLabelsRaw)) {
               const n = parseInt(k, 10)
-              if (Number.isFinite(n) && typeof v === 'string' && v.trim()) r[n] = v.trim()
+              if (Number.isFinite(n) && typeof v === 'string') r[n] = v.trim()
             }
             return Object.keys(r).length > 0 ? r : undefined
           })()

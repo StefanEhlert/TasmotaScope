@@ -261,6 +261,51 @@ backupRouter.post('/backup/delete', async (req, res) => {
   }
 })
 
+/** Liefert die Backup-Daten eines einzelnen Eintrags (für Download). CouchDB nur über Backend. */
+backupRouter.post('/backup/download', async (req, res) => {
+  try {
+    const { deviceId, brokerId, index, couchdb } = req.body as {
+      deviceId?: string
+      brokerId?: string
+      index?: number
+      couchdb?: CouchDbSettings
+    }
+    if (!deviceId || !couchdb || typeof index !== 'number' || index < 0) {
+      res.status(400).json({ error: 'deviceId, couchdb und index (Nummer) sind erforderlich' })
+      return
+    }
+    const brokerIdNorm = normalizeBrokerId(brokerId)
+    const baseUrl = buildCouchDbBaseUrl(couchdb)
+    const headers: Record<string, string> = {
+      Authorization: buildBasicAuthHeader(couchdb),
+    }
+    const dbName = encodeURIComponent(couchdb.database)
+    const docId = `device:${brokerIdNorm}:${deviceId}`
+    const docPath = `${baseUrl}/${dbName}/${encodeURIComponent(docId)}`
+    const getRes = await fetch(docPath, { method: 'GET', headers })
+    if (!getRes.ok) {
+      res.status(404).json({ error: 'Geräte-Dokument nicht gefunden' })
+      return
+    }
+    const doc = (await getRes.json()) as DeviceDoc
+    const items = doc.backups?.items ?? []
+    if (index >= items.length) {
+      res.status(400).json({ error: 'Ungültiger Backup-Index' })
+      return
+    }
+    const item = items[index] as DeviceBackupItem | undefined
+    const data = item?.data
+    if (typeof data !== 'string') {
+      res.status(404).json({ error: 'Backup-Daten nicht vorhanden' })
+      return
+    }
+    res.json({ data })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unbekannter Fehler'
+    res.status(500).json({ error: `Backup-Download fehlgeschlagen: ${message}` })
+  }
+})
+
 /** Liest alle Geräte-Dokumente aus CouchDB. */
 async function fetchDeviceDocs(
   couchdb: CouchDbSettings,

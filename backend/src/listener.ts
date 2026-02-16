@@ -85,7 +85,7 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
                 const r: Record<number, string> = {}
                 for (const [k, v] of Object.entries(doc.webButtonLabels!)) {
                   const n = parseInt(k, 10)
-                  if (Number.isFinite(n) && typeof v === 'string' && v.trim()) r[n] = v.trim()
+                  if (Number.isFinite(n) && typeof v === 'string') r[n] = v.trim()
                 }
                 return Object.keys(r).length > 0 ? r : undefined
               })()
@@ -203,15 +203,24 @@ function connectBroker(broker: BrokerConfig) {
         /^POWER\d*$/i.test(type) ||
         /^STATUS\d*$/i.test(type)
       if (isPowerRelated && client.connected) {
-        const now = Date.now()
-        const last = lastWebButtonRequestByDevice.get(deviceId) ?? 0
-        if (now - last >= WEBBUTTON_DEBOUNCE_MS) {
-          lastWebButtonRequestByDevice.set(deviceId, now)
-          const info = s.getDevice(deviceId)
-          const channels = info?.powerChannels ?? []
-          const targetTopic = info?.topic ?? deviceId
-          for (const ch of channels) {
-            client.publish(`cmnd/${targetTopic}/WebButton${ch.id}`, '', { qos: 0 })
+        const record = s.getDevicesMap().get(deviceId)
+        const webButtonLabels = record?.webButtonLabels
+        const rawWebButtons = (record?.raw?.webButtons ?? {}) as Record<string, string>
+        const channels = record?.info?.powerChannels ?? []
+        const targetTopic = record?.info?.topic ?? deviceId
+        const missing = channels.filter((ch) => {
+          const hasLabel = webButtonLabels?.[ch.id] !== undefined
+          const hasRaw = rawWebButtons[`WebButton${ch.id}`] !== undefined
+          return !hasLabel && !hasRaw
+        })
+        if (missing.length > 0) {
+          const now = Date.now()
+          const last = lastWebButtonRequestByDevice.get(deviceId) ?? 0
+          if (now - last >= WEBBUTTON_DEBOUNCE_MS) {
+            lastWebButtonRequestByDevice.set(deviceId, now)
+            for (const ch of missing) {
+              client.publish(`cmnd/${targetTopic}/WebButton${ch.id}`, '', { qos: 0 })
+            }
           }
         }
       }

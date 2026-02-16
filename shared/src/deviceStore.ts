@@ -152,7 +152,7 @@ function resolvePowerChannelsFromRaw(
         }
         if (!opts.statesOnly) {
           const labelId = registerLabelKey(key)
-          if (labelId !== undefined && typeof value === 'string' && value.trim())
+          if (labelId !== undefined && typeof value === 'string')
             labels.set(labelId, value.trim())
         }
       }
@@ -489,7 +489,7 @@ export function createDeviceStore() {
     if (scope === 'stat' || scope === 'tele' || scope === 'cmnd') knownTopics.add(topicKey)
     for (const [key, value] of Object.entries(payloadAny)) {
       const m = /^WebButton(\d+)$/i.exec(key.trim())
-      if (m && typeof value === 'string' && value.trim()) {
+      if (m && typeof value === 'string') {
         if (!record.webButtonLabels) record.webButtonLabels = {}
         record.webButtonLabels[parseInt(m[1], 10)] = value.trim()
       }
@@ -641,7 +641,7 @@ export function createDeviceStore() {
         for (const payload of Object.values(record.raw)) {
           if (payload && typeof payload === 'object')
             for (const [k, v] of Object.entries(payload as Record<string, unknown>))
-              if (/^WebButton\d+$/i.test(String(k).trim()) && typeof v === 'string' && v.trim())
+              if (/^WebButton\d+$/i.test(String(k).trim()) && typeof v === 'string')
                 agg[k] = v.trim()
         }
         if (Object.keys(agg).length > 0) record.raw[WEBBUTTONS_RAW_KEY] = agg
@@ -657,7 +657,7 @@ export function createDeviceStore() {
         const numLabels: Record<number, string> = {}
         for (const [k, v] of Object.entries(snapshot.webButtonLabels)) {
           const n = parseInt(k, 10)
-          if (Number.isFinite(n) && typeof v === 'string' && v.trim()) numLabels[n] = v.trim()
+          if (Number.isFinite(n) && typeof v === 'string') numLabels[n] = v.trim()
         }
         record.webButtonLabels = Object.keys(numLabels).length > 0 ? numLabels : record.webButtonLabels
       }

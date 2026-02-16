@@ -217,6 +217,37 @@ export async function requestBackup(
   }
 }
 
+/** Lädt die Base64-Daten eines einzelnen Backups vom Backend (Backend holt aus CouchDB). */
+export async function requestBackupDownload(
+  baseUrl: string | undefined,
+  params: {
+    deviceId: string
+    brokerId?: string
+    couchdb: CouchDbSettings
+    index: number
+  },
+): Promise<string> {
+  const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/backup/download'
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: params.deviceId,
+      brokerId: params.brokerId,
+      couchdb: params.couchdb,
+      index: params.index,
+    }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    const msg = (data as { error?: string }).error ?? res.statusText
+    throw new Error(msg)
+  }
+  const data = (await res.json()) as { data: string }
+  if (typeof data.data !== 'string') throw new Error('Backup-Daten ungültig')
+  return data.data
+}
+
 export async function requestDeleteBackup(
   baseUrl: string | undefined,
   params: {

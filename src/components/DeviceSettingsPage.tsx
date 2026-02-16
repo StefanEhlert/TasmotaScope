@@ -8,6 +8,8 @@ type Props = {
   onSendCommand: (deviceId: string, command: string, payload: string) => void
   onTogglePower?: (deviceId: string, channelId: number) => void
   onBackup?: (deviceId: string) => void
+  /** Lädt Backup-Daten vom Backend (wenn item.data fehlt). */
+  onDownloadBackup?: (deviceId: string, brokerId: string | undefined, index: number) => Promise<string>
   onDeleteBackup?: (deviceId: string, index: number) => void
   onUpdateAutoBackup?: (deviceId: string, intervalDays: number | null) => void
   backingUp?: Record<string, boolean>
@@ -378,6 +380,7 @@ function BackupBlock({
   device,
   onCollapse,
   onDeleteBackup,
+  onDownloadBackup,
   onUpdateAutoBackup,
   onBackup,
   backingUp = {},
@@ -386,11 +389,13 @@ function BackupBlock({
   device: DeviceInfo
   onCollapse: () => void
   onDeleteBackup?: (deviceId: string, index: number) => void
+  onDownloadBackup?: (deviceId: string, brokerId: string | undefined, index: number) => Promise<string>
   onUpdateAutoBackup?: (deviceId: string, intervalDays: number | null) => void
   onBackup?: (deviceId: string) => void
   backingUp?: Record<string, boolean>
   backendAvailable?: boolean
 }) {
+  const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null)
   const canBackup =
     backendAvailable && !!device.ip && device.online === true && !backingUp[device.id]
   const days = device.daysSinceBackup
@@ -462,8 +467,25 @@ function BackupBlock({
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => downloadBackupFile(item.data, device.id, item.createdAt)}
-                        className="rounded p-1.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+                        disabled={downloadingIndex === index}
+                        onClick={async () => {
+                          if (typeof item.data === 'string') {
+                            downloadBackupFile(item.data, device.id, item.createdAt)
+                            return
+                          }
+                          if (!onDownloadBackup) return
+                          setDownloadingIndex(index)
+                          try {
+                            const data = await onDownloadBackup(device.id, device.brokerId, index)
+                            downloadBackupFile(data, device.id, item.createdAt)
+                          } catch (err) {
+                            console.error('Backup-Download fehlgeschlagen:', err)
+                            alert(`Download fehlgeschlagen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`)
+                          } finally {
+                            setDownloadingIndex(null)
+                          }
+                        }}
+                        className="rounded p-1.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:opacity-50"
                         title="Backup-Datei herunterladen"
                         aria-label="Herunterladen"
                       >
@@ -912,6 +934,7 @@ export default function DeviceSettingsPage({
   onSendCommand,
   onTogglePower,
   onBackup,
+  onDownloadBackup,
   onDeleteBackup,
   onUpdateAutoBackup,
   backingUp = {},
@@ -1183,6 +1206,7 @@ export default function DeviceSettingsPage({
                         device={device}
                         onCollapse={() => setCollapsed(expandedBackupBlock.id, true)}
                         onDeleteBackup={onDeleteBackup}
+                        onDownloadBackup={onDownloadBackup}
                         onUpdateAutoBackup={onUpdateAutoBackup}
                         onBackup={onBackup}
                         backingUp={backingUp}
