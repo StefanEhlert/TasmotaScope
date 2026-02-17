@@ -343,7 +343,7 @@ function extractSensorNames(data: Record<string, unknown>, sensors: Set<string>,
 /**
  * Get set of available switch numbers from device data
  */
-function getAvailableSwitches(deviceId: string): Set<string> {
+export function getAvailableSwitches(deviceId: string): Set<string> {
   const switches = new Set<string>()
   const properties = DeviceState.getProperties(deviceId)
   
@@ -359,7 +359,7 @@ function getAvailableSwitches(deviceId: string): Set<string> {
 /**
  * Get set of available button numbers from device data
  */
-function getAvailableButtons(deviceId: string): Set<string> {
+export function getAvailableButtons(deviceId: string): Set<string> {
   const buttons = new Set<string>()
   const properties = DeviceState.getProperties(deviceId)
   

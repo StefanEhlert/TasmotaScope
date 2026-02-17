@@ -193,7 +193,15 @@ function updatePropertiesFromPayload(record: DeviceRecord, payload: Record<strin
     next[key] = c
     return c
   }
-  Object.entries(payload).forEach(([key, value]) => {
+  // Tasmota sends Switch/Button (and sensor data) inside StatusSNS; STATUS responses use StatusSTS for POWER etc.
+  const entriesToProcess: [string, unknown][] = [...Object.entries(payload)]
+  if (payload.StatusSNS && typeof payload.StatusSNS === 'object' && !Array.isArray(payload.StatusSNS)) {
+    entriesToProcess.push(...Object.entries(payload.StatusSNS as Record<string, unknown>))
+  }
+  if (payload.StatusSTS && typeof payload.StatusSTS === 'object' && !Array.isArray(payload.StatusSTS)) {
+    entriesToProcess.push(...Object.entries(payload.StatusSTS as Record<string, unknown>))
+  }
+  entriesToProcess.forEach(([key, value]) => {
     if (key === 'Wifi' || key === 'WIFI') return
     const pm = /^POWER(\d+)?$/i.exec(key)
     if (pm) { ensureGroup('POWER')[pm[1] ?? '1'] = value; return }
@@ -201,12 +209,58 @@ function updatePropertiesFromPayload(record: DeviceRecord, payload: Record<strin
     if (sm) { ensureGroup('Switch')[sm[1]] = value; return }
     const bm = /^Button(\d+)$/i.exec(key)
     if (bm) { ensureGroup('Button')[bm[1]] = value; return }
+    const switchModeM = /^SwitchMode(\d+)$/i.exec(key)
+    if (switchModeM) {
+      const num = switchModeM[1]
+      const n = typeof value === 'number' ? value : typeof value === 'string' ? parseInt(value, 10) : undefined
+      ensureGroup('SwitchMode')[num] = Number.isFinite(n) ? n : value
+      return
+    }
+    const switchTextM = /^SwitchText(\d+)$/i.exec(key)
+    if (switchTextM) {
+      const num = switchTextM[1]
+      ensureGroup('SwitchText')[num] = typeof value === 'string' ? value : value != null ? String(value) : ''
+      return
+    }
     const vm = /^VAR(\d+)$/i.exec(key)
     if (vm) { ensureGroup('VAR')[vm[1]] = value; return }
     const mm = /^MEM(\d+)$/i.exec(key)
     if (mm) { ensureGroup('MEM')[mm[1]] = value; return }
     const tm = /^(?:RuleTimer|T)(\d+)$/i.exec(key)
     if (tm) { ensureGroup('RuleTimer')[tm[1]] = value; return }
+    if (key === 'SetOption32') {
+      const n = typeof value === 'number' ? value : typeof value === 'string' ? parseInt(value, 10) : undefined
+      next[key] = Number.isFinite(n) ? n : value
+      return
+    }
+    if (key === 'SetOption114' || key === 'SetOption53' || key === 'SetOption56' || key === 'SetOption142') {
+      const s = typeof value === 'string' ? value.trim().toUpperCase() : undefined
+      if (s === 'ON' || s === 'OFF') {
+        next[key] = s
+        return
+      }
+      const b = typeof value === 'boolean' ? value : typeof value === 'number' ? value === 1 : typeof value === 'string' ? (value === '1' || value.toString().toLowerCase() === 'true') : undefined
+      next[key] = b !== undefined ? (b ? 'ON' : 'OFF') : value
+      return
+    }
+    if (key === 'SwitchTopic') {
+      if (typeof value === 'number' && (value === 0 || value === 1 || value === 2)) {
+        next[key] = String(value)
+        return
+      }
+      if (typeof value === 'string') {
+        next[key] = value.trim()
+        return
+      }
+      next[key] = value
+      return
+    }
+    const wifiMatch = /^(SSID|Password)(\d)$/i.exec(key)
+    if (wifiMatch) {
+      const canon = (wifiMatch[1].toLowerCase() === 'ssid' ? 'SSID' : 'Password') + wifiMatch[2]
+      next[canon] = typeof value === 'string' ? value : value != null ? String(value) : ''
+      return
+    }
     if (value && typeof value === 'object' && !Array.isArray(value)) next[key] = value
   })
   record.properties = next
@@ -744,6 +798,18 @@ export function createDeviceStore() {
     notify()
   }
 
+  /** Entfernt ein Gerät aus dem Store (z. B. nach Topic-Wechsel: Offline-Duplikat mit gleicher IP löschen). */
+  const removeDevice = (deviceId: string) => {
+    const record = devices.get(deviceId)
+    if (!record) return
+    if (record.poll?.timer) clearInterval(record.poll.timer)
+    devices.delete(deviceId)
+    dirtyDevices.delete(deviceId)
+    pendingPersist.delete(deviceId)
+    editingRules.delete(deviceId)
+    notify()
+  }
+
   return {
     subscribe(callback: () => void) {
       listeners.add(callback)
@@ -813,6 +879,7 @@ export function createDeviceStore() {
     },
     /** Alle Records (Backend: für Persist oder GET /api/devices). */
     getDevicesMap: () => devices,
+    removeDevice,
   }
 }
 

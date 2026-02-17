@@ -4,7 +4,9 @@ import type { DeviceInfo, PowerChannel } from '../lib/types'
 import type { BlakadderListItem } from '../lib/backendClient'
 import { getBlakadderList } from '../lib/backendClient'
 import { DeviceState } from '../DeviceState'
-import { getGpioAssignments } from '../lib/gpioComponents'
+import { getAvailableSwitches } from '../lib/deviceComponents'
+import { getGpioAssignments, getButtonNumbersFromGpioArray } from '../lib/gpioComponents'
+import { SWITCH_MODE_OPTIONS, getSwitchModeOption } from '../lib/SwitchMode'
 import {
   TASMOTA_WEBUI_THEMES,
   getStoredWebColorArray,
@@ -787,6 +789,962 @@ function PowerConfigContent({
   )
 }
 
+function formatSwitchState(value: unknown): string {
+  if (value === undefined || value === null) return '—'
+  if (typeof value === 'string') {
+    const u = value.trim().toUpperCase()
+    if (u === 'ON' || u === '1') return 'ON'
+    if (u === 'OFF' || u === '0') return 'OFF'
+    return value
+  }
+  if (typeof value === 'number') return value === 1 ? 'ON' : value === 0 ? 'OFF' : String(value)
+  if (typeof value === 'boolean') return value ? 'ON' : 'OFF'
+  return String(value)
+}
+
+const WIFI_PASSWORD_STORAGE_KEY = 'tasmotascope:wifi:password'
+
+function getStoredWifiPassword(deviceId: string, slot: 1 | 2): string {
+  try {
+    const raw = localStorage.getItem(`${WIFI_PASSWORD_STORAGE_KEY}:${deviceId}:${slot}`)
+    return typeof raw === 'string' ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
+function setStoredWifiPassword(deviceId: string, slot: 1 | 2, value: string): void {
+  try {
+    if (value) {
+      localStorage.setItem(`${WIFI_PASSWORD_STORAGE_KEY}:${deviceId}:${slot}`, value)
+    } else {
+      localStorage.removeItem(`${WIFI_PASSWORD_STORAGE_KEY}:${deviceId}:${slot}`)
+    }
+  } catch {
+    // localStorage voll oder nicht verfügbar
+  }
+}
+
+function WiFiConfigContent({
+  device,
+  onSendCommand,
+  storeTick,
+}: {
+  device: DeviceInfo
+  onSendCommand: (deviceId: string, command: string, payload: string) => void
+  storeTick?: number
+}) {
+  const properties = DeviceState.getProperties(device.id)
+  const requestedWifiRef = useRef<string | null>(null)
+  const onSendCommandRef = useRef(onSendCommand)
+  onSendCommandRef.current = onSendCommand
+  const [ssid1Value, setSsid1Value] = useState('')
+  const [ssid2Value, setSsid2Value] = useState('')
+  const [password1Value, setPassword1Value] = useState('')
+  const [password2Value, setPassword2Value] = useState('')
+  const [showPassword1, setShowPassword1] = useState(false)
+  const [showPassword2, setShowPassword2] = useState(false)
+  const ssid1FocusedRef = useRef(false)
+  const ssid2FocusedRef = useRef(false)
+  const requestedSetOption53Ref = useRef<string | null>(null)
+  const requestedSetOption56Ref = useRef<string | null>(null)
+  const requestedSetOption142Ref = useRef<string | null>(null)
+  const [setOption53, setSetOption53] = useState<'ON' | 'OFF'>('OFF')
+  const [setOption56, setSetOption56] = useState<'ON' | 'OFF'>('OFF')
+  const [setOption142, setSetOption142] = useState<'ON' | 'OFF'>('OFF')
+
+  useEffect(() => {
+    if (!device?.id) return
+    if (requestedWifiRef.current === device.id) return
+    requestedWifiRef.current = device.id
+    const send = onSendCommandRef.current
+    send(device.id, 'SSID1', '')
+    send(device.id, 'SSID2', '')
+  }, [device?.id])
+
+  useEffect(() => {
+    if (!device?.id) return
+    if (requestedSetOption53Ref.current === device.id) return
+    requestedSetOption53Ref.current = device.id
+    onSendCommandRef.current(device.id, 'SetOption53', '')
+  }, [device?.id])
+
+  useEffect(() => {
+    if (!device?.id) return
+    if (requestedSetOption56Ref.current === device.id) return
+    requestedSetOption56Ref.current = device.id
+    onSendCommandRef.current(device.id, 'SetOption56', '')
+  }, [device?.id])
+
+  useEffect(() => {
+    if (!device?.id) return
+    if (requestedSetOption142Ref.current === device.id) return
+    requestedSetOption142Ref.current = device.id
+    onSendCommandRef.current(device.id, 'SetOption142', '')
+  }, [device?.id])
+
+  useEffect(() => {
+    if (!device?.id) return
+    setPassword1Value(getStoredWifiPassword(device.id, 1))
+    setPassword2Value(getStoredWifiPassword(device.id, 2))
+  }, [device?.id])
+
+  const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+  const result = raw?.['stat/RESULT'] as Record<string, unknown> | undefined
+  const getFromObject = (obj: Record<string, unknown> | undefined, key: string): string => {
+    if (!obj) return ''
+    const exact = obj[key]
+    if (typeof exact === 'string') return exact
+    if (exact != null) return String(exact)
+    const keyLower = key.toLowerCase()
+    const entry = Object.entries(obj).find(([k]) => k.toLowerCase() === keyLower)
+    if (entry) return typeof entry[1] === 'string' ? entry[1] : entry[1] != null ? String(entry[1]) : ''
+    return ''
+  }
+  const get = (key: string): string => {
+    const fromProps = getFromObject(properties as Record<string, unknown>, key)
+    if (fromProps) return fromProps
+    const fromResult = getFromObject(result, key)
+    if (fromResult) return fromResult
+    const topicKey = `stat/${key}`
+    const fromTopic = raw?.[topicKey] as Record<string, unknown> | undefined
+    return getFromObject(fromTopic, key)
+  }
+
+  const ssid1FromStore = get('SSID1')
+  const ssid2FromStore = get('SSID2')
+  useEffect(() => {
+    if (!ssid1FocusedRef.current) setSsid1Value(ssid1FromStore)
+  }, [ssid1FromStore, storeTick])
+  useEffect(() => {
+    if (!ssid2FocusedRef.current) setSsid2Value(ssid2FromStore)
+  }, [ssid2FromStore, storeTick])
+
+  const handleSsid1Blur = () => {
+    ssid1FocusedRef.current = false
+    onSendCommandRef.current(device.id, 'SSID1', ssid1Value.trim())
+  }
+  const handleSsid2Blur = () => {
+    ssid2FocusedRef.current = false
+    onSendCommandRef.current(device.id, 'SSID2', ssid2Value.trim())
+  }
+  const handlePassword1Blur = () => {
+    onSendCommandRef.current(device.id, 'Password1', password1Value)
+    setStoredWifiPassword(device.id, 1, password1Value)
+  }
+  const handlePassword2Blur = () => {
+    onSendCommandRef.current(device.id, 'Password2', password2Value)
+    setStoredWifiPassword(device.id, 2, password2Value)
+  }
+
+  const setOption53FromStore = ((): 'ON' | 'OFF' | undefined => {
+    const v = properties?.SetOption53
+    if (typeof v === 'string') {
+      const u = v.trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    const fromResult = result?.SetOption53
+    if (typeof fromResult === 'string') {
+      const u = String(fromResult).trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    if (fromResult !== undefined && fromResult !== null) return fromResult === 1 || fromResult === true ? 'ON' : 'OFF'
+    return undefined
+  })()
+  useEffect(() => {
+    if (setOption53FromStore !== undefined) setSetOption53(setOption53FromStore)
+  }, [setOption53FromStore, storeTick])
+
+  const handleSetOption53Change = (value: 'ON' | 'OFF') => {
+    setSetOption53(value)
+    onSendCommandRef.current(device.id, 'SetOption53', value)
+  }
+
+  const setOption56FromStore = ((): 'ON' | 'OFF' | undefined => {
+    const v = properties?.SetOption56
+    if (typeof v === 'string') {
+      const u = v.trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    const fromResult = result?.SetOption56
+    if (typeof fromResult === 'string') {
+      const u = String(fromResult).trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    if (fromResult !== undefined && fromResult !== null) return fromResult === 1 || fromResult === true ? 'ON' : 'OFF'
+    return undefined
+  })()
+  useEffect(() => {
+    if (setOption56FromStore !== undefined) setSetOption56(setOption56FromStore)
+  }, [setOption56FromStore, storeTick])
+
+  const handleSetOption56Change = (value: 'ON' | 'OFF') => {
+    setSetOption56(value)
+    onSendCommandRef.current(device.id, 'SetOption56', value)
+  }
+
+  const setOption142FromStore = ((): 'ON' | 'OFF' | undefined => {
+    const v = properties?.SetOption142
+    if (typeof v === 'string') {
+      const u = v.trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    const fromResult = result?.SetOption142
+    if (typeof fromResult === 'string') {
+      const u = String(fromResult).trim().toUpperCase()
+      if (u === 'ON' || u === 'OFF') return u
+    }
+    if (fromResult !== undefined && fromResult !== null) return fromResult === 1 || fromResult === true ? 'ON' : 'OFF'
+    return undefined
+  })()
+  useEffect(() => {
+    if (setOption142FromStore !== undefined) setSetOption142(setOption142FromStore)
+  }, [setOption142FromStore, storeTick])
+
+  const handleSetOption142Change = (value: 'ON' | 'OFF') => {
+    setSetOption142(value)
+    onSendCommandRef.current(device.id, 'SetOption142', value)
+  }
+
+  const inputClass = 'min-h-[2.5rem] w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30'
+
+  return (
+    <div className="flex w-full gap-4">
+      <div className="w-1/2 min-w-0">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">SSID 1</span>
+          <input
+            type="text"
+            autoComplete="off"
+            value={ssid1Value}
+            onChange={(e) => setSsid1Value(e.target.value)}
+            onFocus={() => { ssid1FocusedRef.current = true }}
+            onBlur={handleSsid1Blur}
+            className={inputClass}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Passwort 1</span>
+          <div className="flex min-h-[2.5rem] items-center gap-1 rounded-md border border-slate-700 bg-slate-900">
+            <input
+              type={showPassword1 ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={password1Value}
+              onChange={(e) => setPassword1Value(e.target.value)}
+              onBlur={handlePassword1Blur}
+              placeholder="Nur setzbar, nicht lesbar"
+              className="flex-1 min-w-0 rounded-md border-0 bg-transparent px-3 py-2 font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-0"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword1((v) => !v)}
+              className="shrink-0 px-2 py-2 text-slate-400 hover:text-slate-200"
+              title={showPassword1 ? 'Passwort verbergen' : 'Passwort anzeigen'}
+              aria-label={showPassword1 ? 'Passwort verbergen' : 'Passwort anzeigen'}
+            >
+              {showPassword1 ? (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">SSID 2</span>
+          <input
+            type="text"
+            autoComplete="off"
+            value={ssid2Value}
+            onChange={(e) => setSsid2Value(e.target.value)}
+            onFocus={() => { ssid2FocusedRef.current = true }}
+            onBlur={handleSsid2Blur}
+            className={inputClass}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Passwort 2</span>
+          <div className="flex min-h-[2.5rem] items-center gap-1 rounded-md border border-slate-700 bg-slate-900">
+            <input
+              type={showPassword2 ? 'text' : 'password'}
+              autoComplete="new-password"
+              value={password2Value}
+              onChange={(e) => setPassword2Value(e.target.value)}
+              onBlur={handlePassword2Blur}
+              placeholder="Nur setzbar, nicht lesbar"
+              className="flex-1 min-w-0 rounded-md border-0 bg-transparent px-3 py-2 font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-0"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword2((v) => !v)}
+              className="shrink-0 px-2 py-2 text-slate-400 hover:text-slate-200"
+              title={showPassword2 ? 'Passwort verbergen' : 'Passwort anzeigen'}
+              aria-label={showPassword2 ? 'Passwort verbergen' : 'Passwort anzeigen'}
+            >
+              {showPassword2 ? (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <div className="border-l border-slate-700 shrink-0" aria-hidden="true" />
+
+      <div className="flex w-1/2 min-w-0 flex-col gap-4">
+        <div className="flex gap-4">
+          <div className="w-1/2 min-w-0">
+            <div className="flex flex-col gap-1">
+              <span
+                className="text-xs font-medium text-slate-400"
+                title="Zeige Hostname und IP-Adresse in der WebUI an oder nicht"
+              >
+                SetOption53
+              </span>
+              <select
+                value={setOption53}
+                onChange={(e) => handleSetOption53Change((e.target.value as 'ON' | 'OFF'))}
+                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+              >
+                <option value="ON">ON = Hostname und IP-Adresse anzeigen</option>
+                <option value="OFF">OFF = Hostname und IP-Adresse nicht anzeigen</option>
+              </select>
+            </div>
+          </div>
+          <div className="w-1/2 min-w-0">
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-slate-400">
+                SetOption56
+              </span>
+              <select
+                value={setOption56}
+                onChange={(e) => handleSetOption56Change((e.target.value as 'ON' | 'OFF'))}
+                className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+              >
+                <option value="ON">ON = Stärkstes WiFi wählen</option>
+                <option value="OFF">OFF = disable (default)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="w-1/2 min-w-0">
+          <div className="flex flex-col gap-1">
+            <span
+              className="text-xs font-medium text-slate-400"
+              title="1s auf WiFi-Verbindung warten - löst Probleme bei manchen Fritzboxen"
+            >
+              SetOption142
+            </span>
+            <select
+              value={setOption142}
+              onChange={(e) => handleSetOption142Change((e.target.value as 'ON' | 'OFF'))}
+              className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+            >
+              <option value="ON">ON = 1s auf WiFi-Verbindung warten</option>
+              <option value="OFF">OFF = disable (default)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SwitcheConfigContent({
+  device,
+  onSendCommand,
+  storeTick,
+}: {
+  device: DeviceInfo
+  onSendCommand: (deviceId: string, command: string, payload: string) => void
+  storeTick?: number
+}) {
+  const switchNumbers = useMemo(
+    () => Array.from(getAvailableSwitches(device.id)).sort((a, b) => Number(a) - Number(b)),
+    [device.id],
+  )
+  const [selectedSwitch, setSelectedSwitch] = useState<string>(switchNumbers[0] ?? '1')
+  const properties = DeviceState.getProperties(device.id)
+  const [switchMode, setSwitchMode] = useState<number>(0)
+  const [showSwitchModeInfoModal, setShowSwitchModeInfoModal] = useState(false)
+  const [showSwitchTopicList, setShowSwitchTopicList] = useState(false)
+  const [switchTopicListPosition, setSwitchTopicListPosition] = useState<{ top: number; left: number; width: number } | null>(null)
+  const switchTopicWrapRef = useRef<HTMLDivElement>(null)
+  const switchTopicListRef = useRef<HTMLDivElement>(null)
+  const switchTopicFocusedRef = useRef(false)
+  const [setOption32, setSetOption32] = useState<number>(10)
+  const [setOption114, setSetOption114] = useState<'ON' | 'OFF'>('OFF')
+  const [switchTopicValue, setSwitchTopicValue] = useState<string>('0')
+  const [switchTextValue, setSwitchTextValue] = useState<string>('')
+
+  // Zustand: direkt aus properties.Switch[selectedSwitch] (wie Zustand – keine lokale State-Fallback)
+  const currentState = properties?.Switch && typeof properties.Switch === 'object'
+    ? (properties.Switch as Record<string, unknown>)[selectedSwitch]
+    : undefined
+  const stateDisplay = formatSwitchState(currentState)
+
+  // SwitchMode: wie Zustand direkt aus properties lesen; Fallback auf raw['stat/RESULT'], falls nur dort vorhanden
+  const displaySwitchMode = (() => {
+    const fromProps =
+      properties?.SwitchMode && typeof properties.SwitchMode === 'object'
+        ? (properties.SwitchMode as Record<string, unknown>)[selectedSwitch]
+        : undefined
+    let v = fromProps
+    if (v === undefined || v === null) {
+      const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+      const result = raw?.['stat/RESULT']
+      if (result && typeof result === 'object')
+        v = (result as Record<string, unknown>)[`SwitchMode${selectedSwitch}`]
+    }
+    if (v === undefined || v === null) return 0
+    if (typeof v === 'number' && Number.isFinite(v)) return v
+    if (typeof v === 'string') {
+      const n = parseInt(v, 10)
+      if (Number.isFinite(n)) return n
+    }
+    return 0
+  })()
+  const currentModeOption = getSwitchModeOption(displaySwitchMode)
+
+  const onSendCommandRef = useRef(onSendCommand)
+  onSendCommandRef.current = onSendCommand
+  const requestedSwitchModesForDeviceRef = useRef<string | null>(null)
+  const requestedSetOption32Ref = useRef<string | null>(null)
+  const requestedSetOption114Ref = useRef<string | null>(null)
+  const requestedSwitchTopicRef = useRef<string | null>(null)
+  const requestedSwitchTextRef = useRef<string | null>(null)
+  const switchTextFocusedRef = useRef(false)
+  const pendingEmptySwitchTextRef = useRef<string | null>(null)
+
+  // Einmal pro Gerät beim Anzeigen SwitchMode(x), SwitchText(x), SetOption32, SetOption114 und SwitchTopic abfragen (ohne Payload)
+  useEffect(() => {
+    if (!device?.id || switchNumbers.length === 0) return
+    const send = onSendCommandRef.current
+    if (requestedSwitchModesForDeviceRef.current !== device.id) {
+      requestedSwitchModesForDeviceRef.current = device.id
+      switchNumbers.forEach((num) => {
+        send(device.id, `SwitchMode${num}`, '')
+      })
+    }
+    if (requestedSwitchTextRef.current !== device.id) {
+      requestedSwitchTextRef.current = device.id
+      switchNumbers.forEach((num) => {
+        send(device.id, `SwitchText${num}`, '')
+      })
+    }
+    if (requestedSetOption32Ref.current !== device.id) {
+      requestedSetOption32Ref.current = device.id
+      send(device.id, 'SetOption32', '')
+    }
+    if (requestedSetOption114Ref.current !== device.id) {
+      requestedSetOption114Ref.current = device.id
+      send(device.id, 'SetOption114', '')
+    }
+    if (requestedSwitchTopicRef.current !== device.id) {
+      requestedSwitchTopicRef.current = device.id
+      send(device.id, 'SwitchTopic', '')
+    }
+  }, [device?.id, switchNumbers])
+
+  useEffect(() => {
+    if (switchNumbers.length > 0 && !switchNumbers.includes(selectedSwitch)) {
+      setSelectedSwitch(switchNumbers[0])
+    }
+  }, [switchNumbers, selectedSwitch])
+
+  useEffect(() => {
+    pendingEmptySwitchTextRef.current = null
+  }, [selectedSwitch])
+
+  // SwitchMode-State mit Store synchron halten, wenn sich Switch oder Store ändert
+  useEffect(() => {
+    const props = DeviceState.getProperties(device.id)
+    let v =
+      props?.SwitchMode && typeof props.SwitchMode === 'object'
+        ? (props.SwitchMode as Record<string, unknown>)[selectedSwitch]
+        : undefined
+    if (v === undefined || v === null) {
+      const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+      const result = raw?.['stat/RESULT']
+      if (result && typeof result === 'object')
+        v = (result as Record<string, unknown>)[`SwitchMode${selectedSwitch}`]
+    }
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(String(v), 10) : undefined
+    setSwitchMode(Number.isFinite(n) ? n! : 0)
+  }, [device.id, selectedSwitch, storeTick])
+
+  // SwitchText-Wert aus Store lesen (pro Switch) und State synchron halten, wenn nicht fokussiert
+  const switchTextFromStore = ((): string | undefined => {
+    const props = DeviceState.getProperties(device.id)
+    let v: unknown =
+      props?.SwitchText && typeof props.SwitchText === 'object'
+        ? (props.SwitchText as Record<string, unknown>)[selectedSwitch]
+        : undefined
+    if (v === undefined || v === null) {
+      const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+      const result = raw?.['stat/RESULT']
+      if (result && typeof result === 'object')
+        v = (result as Record<string, unknown>)[`SwitchText${selectedSwitch}`]
+    }
+    return v !== undefined && v !== null ? String(v) : undefined
+  })()
+  useEffect(() => {
+    if (!switchTextFocusedRef.current && switchTextFromStore !== undefined) {
+      if (pendingEmptySwitchTextRef.current === selectedSwitch) {
+        if (switchTextFromStore === '') {
+          setSwitchTextValue('')
+          pendingEmptySwitchTextRef.current = null
+        }
+      } else {
+        setSwitchTextValue(switchTextFromStore)
+      }
+    }
+  }, [switchTextFromStore, selectedSwitch, storeTick])
+
+  const handleSwitchTextBlur = () => {
+    switchTextFocusedRef.current = false
+    const trimmed = switchTextValue.trim()
+    // Leeres Feld: Tasmota setzt String-Befehle mit Payload "" (zwei Anführungszeichen) auf leeren Wert zurück.
+    const payload = trimmed === '' ? '""' : trimmed
+    onSendCommand(device.id, `SwitchText${selectedSwitch}`, payload)
+    if (trimmed === '') pendingEmptySwitchTextRef.current = selectedSwitch
+  }
+
+  // SetOption32-Wert aus Store (properties oder raw) lesen und State synchron halten
+  const setOption32FromStore = (() => {
+    const v = properties?.SetOption32
+    if (v !== undefined && v !== null) {
+      const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(String(v), 10) : undefined
+      if (typeof n === 'number' && Number.isFinite(n)) return Math.min(100, Math.max(1, n))
+    }
+    const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+    const result = raw?.['stat/RESULT']
+    if (result && typeof result === 'object') {
+      const r = (result as Record<string, unknown>).SetOption32
+      const n = typeof r === 'number' ? r : typeof r === 'string' ? parseInt(String(r), 10) : undefined
+      if (typeof n === 'number' && Number.isFinite(n)) return Math.min(100, Math.max(1, n))
+    }
+    return undefined
+  })()
+  useEffect(() => {
+    if (setOption32FromStore !== undefined) setSetOption32(setOption32FromStore)
+  }, [setOption32FromStore, storeTick])
+
+  const handleSetOption32Change = (value: number) => {
+    setSetOption32(Math.min(100, Math.max(1, value)))
+  }
+
+  const handleSetOption32Commit = (e: React.PointerEvent<HTMLInputElement>) => {
+    const value = Number((e.currentTarget as HTMLInputElement).value)
+    const clamped = Math.min(100, Math.max(1, value))
+    onSendCommand(device.id, 'SetOption32', String(clamped))
+  }
+
+  // SetOption114-Wert aus Store lesen (ON/OFF) und State synchron halten
+  const setOption114FromStore = ((): 'ON' | 'OFF' | undefined => {
+    const toOnOff = (v: unknown): 'ON' | 'OFF' | undefined => {
+      if (v === undefined || v === null) return undefined
+      if (typeof v === 'string') {
+        const u = v.trim().toUpperCase()
+        if (u === 'ON') return 'ON'
+        if (u === 'OFF') return 'OFF'
+        if (u === '1') return 'ON'
+        if (u === '0') return 'OFF'
+      }
+      if (typeof v === 'number') return v === 1 ? 'ON' : 'OFF'
+      if (typeof v === 'boolean') return v ? 'ON' : 'OFF'
+      return undefined
+    }
+    const v = toOnOff(properties?.SetOption114)
+    if (v !== undefined) return v
+    const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+    const result = raw?.['stat/RESULT']
+    if (result && typeof result === 'object')
+      return toOnOff((result as Record<string, unknown>).SetOption114)
+    return undefined
+  })()
+  useEffect(() => {
+    if (setOption114FromStore !== undefined) setSetOption114(setOption114FromStore)
+  }, [setOption114FromStore, storeTick])
+
+  const handleSetOption114Change = (value: 'ON' | 'OFF') => {
+    setSetOption114(value)
+    onSendCommand(device.id, 'SetOption114', value)
+  }
+
+  // SwitchTopic-Wert aus Store lesen und State synchron halten
+  const switchTopicFromStore = ((): string | undefined => {
+    const v = properties?.SwitchTopic
+    if (v !== undefined && v !== null) {
+      if (typeof v === 'number' && (v === 0 || v === 1 || v === 2)) return String(v)
+      if (typeof v === 'string') return v.trim()
+    }
+    const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+    const result = raw?.['stat/RESULT']
+    if (result && typeof result === 'object') {
+      const r = (result as Record<string, unknown>).SwitchTopic
+      if (typeof r === 'number' && (r === 0 || r === 1 || r === 2)) return String(r)
+      if (typeof r === 'string') return String(r).trim()
+    }
+    return undefined
+  })()
+  useEffect(() => {
+    if (switchTopicFromStore !== undefined && !switchTopicFocusedRef.current) {
+      setSwitchTopicValue(switchTopicFromStore)
+    }
+  }, [switchTopicFromStore, storeTick])
+
+  const handleSwitchTopicBlur = () => {
+    const trimmed = switchTopicValue.trim()
+    const toSend = trimmed === '' ? '0' : trimmed
+    onSendCommand(device.id, 'SwitchTopic', toSend)
+    if (trimmed === '') setSwitchTopicValue('0')
+  }
+
+  const handleSwitchTopicOptionPick = (value: string) => {
+    setSwitchTopicValue(value)
+    onSendCommand(device.id, 'SwitchTopic', value)
+    setShowSwitchTopicList(false)
+  }
+
+  useLayoutEffect(() => {
+    if (!showSwitchTopicList || !switchTopicWrapRef.current) {
+      setSwitchTopicListPosition(null)
+      return
+    }
+    const rect = switchTopicWrapRef.current.getBoundingClientRect()
+    setSwitchTopicListPosition({
+      top: rect.bottom + 2,
+      left: rect.left,
+      width: rect.width,
+    })
+  }, [showSwitchTopicList])
+
+  useEffect(() => {
+    if (!showSwitchTopicList) return
+    const close = (e: MouseEvent) => {
+      const target = e.target as Node
+      const inWrap = switchTopicWrapRef.current?.contains(target)
+      const inList = switchTopicListRef.current?.contains(target)
+      if (!inWrap && !inList) setShowSwitchTopicList(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [showSwitchTopicList])
+
+  if (switchNumbers.length === 0) {
+    return (
+      <p className="text-slate-400">Keine Switche an diesem Gerät verfügbar.</p>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Switch</span>
+          <select
+            value={selectedSwitch}
+            onChange={(e) => setSelectedSwitch(e.target.value)}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+          >
+            {switchNumbers.map((num) => (
+              <option key={num} value={num}>
+                Switch {num}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Zustand</span>
+          <div className="min-w-[5rem] rounded-md border border-slate-700 bg-slate-900/80 px-3 py-2 font-mono text-slate-200">
+            {stateDisplay}
+          </div>
+        </label>
+        <label className="flex flex-col gap-1 shrink-0">
+          <span
+            className="text-xs font-medium text-slate-400"
+            title="Ersetzt den Default-Wert Switch(x) als Label in JSON-Nachrichten"
+          >
+            SwitchText
+          </span>
+          <input
+            type="text"
+            autoComplete="off"
+            maxLength={64}
+            size={40}
+            value={switchTextValue}
+            onChange={(e) => setSwitchTextValue(e.target.value)}
+            onFocus={() => { switchTextFocusedRef.current = true }}
+            onBlur={handleSwitchTextBlur}
+            placeholder={`Label für Switch ${selectedSwitch} (leer = Default)`}
+            className="w-[40ch] max-w-[40ch] rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+          />
+        </label>
+        <label className="flex flex-col gap-1 flex-1 min-w-0">
+          <span className="text-xs font-medium text-slate-400">SwitchMode</span>
+          <div className="flex gap-2 items-center min-w-0">
+            <select
+              value={switchMode}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                setSwitchMode(v)
+                onSendCommand(device.id, `SwitchMode${selectedSwitch}`, String(v))
+              }}
+              className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 flex-1 min-w-0"
+            >
+              {SWITCH_MODE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowSwitchModeInfoModal(true)}
+              className="rounded-md border border-slate-700 bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-slate-200 shrink-0"
+              title="Erklärung anzeigen"
+              aria-label="SwitchMode-Erklärung anzeigen"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4" />
+                <path d="M12 8h.01" />
+              </svg>
+            </button>
+          </div>
+        </label>
+      </div>
+
+      <div className="border-b border-slate-700" aria-hidden="true" />
+
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex flex-col gap-1 w-1/3 min-w-0">
+          <span
+            className="text-xs font-medium text-slate-400"
+            title="Zeigt die aktuelle Zeit an, die der Button gedrückt sein muss, bis die Halten-Funktionalität des Buttons ausgelöst wird. Der Wert bedeutet Zehntelsekunden, der Standardwert ist 40 also 4 Sekunden."
+          >
+            SetOption32
+          </span>
+          <div className="flex gap-3 items-center">
+            <input
+              type="range"
+              min={1}
+              max={100}
+              value={setOption32}
+              onChange={(e) => handleSetOption32Change(Number(e.target.value))}
+              onPointerUp={handleSetOption32Commit}
+              className="flex-1 h-2 rounded-lg appearance-none bg-slate-700 accent-emerald-500 min-w-0"
+            />
+            <span className="min-w-[2.5rem] text-right font-mono text-slate-200 tabular-nums shrink-0">
+              {setOption32}
+            </span>
+          </div>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span
+            className="text-xs font-medium text-slate-400"
+            title='Entkoppelt alle Switche von den Relais und sendet stattdessen eine MQTT-Nachricht - Beispielsweise: {"Switch1":{"Action":"ON"}}'
+          >
+            SetOption114
+          </span>
+          <select
+            value={setOption114}
+            onChange={(e) => handleSetOption114Change((e.target.value as 'ON' | 'OFF'))}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 min-w-[12rem]"
+          >
+            <option value="OFF">OFF = disable (default)</option>
+            <option value="ON">ON = enable</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 min-w-0 flex-1">
+          <span
+            className="text-xs font-medium text-slate-400"
+            title="0 = keine MQTT-Nachricht, 1 = Topic = Geräte-Topic, 2 = Firmware-Default, oder eigenes Topic (Zeichenfolge)"
+          >
+            SwitchTopic
+          </span>
+          <div ref={switchTopicWrapRef} className="relative flex min-w-[12rem]">
+            <input
+              type="text"
+              autoComplete="off"
+              value={switchTopicValue}
+              onChange={(e) => setSwitchTopicValue(e.target.value)}
+              onFocus={() => { switchTopicFocusedRef.current = true }}
+              onBlur={() => {
+                switchTopicFocusedRef.current = false
+                handleSwitchTopicBlur()
+              }}
+              placeholder="0, 1, 2 oder eigenes Topic"
+              className="rounded-l-md border border-slate-700 border-r-0 bg-slate-900 px-3 py-2 text-slate-100 placeholder:text-slate-500 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 flex-1 min-w-0"
+            />
+            <button
+              type="button"
+              onClick={() => setShowSwitchTopicList((v) => !v)}
+              className="rounded-r-md border border-slate-700 bg-slate-800 px-2 py-2 text-slate-300 hover:bg-slate-700 hover:text-slate-200 shrink-0"
+              title="Vorschläge anzeigen"
+              aria-expanded={showSwitchTopicList}
+              aria-haspopup="listbox"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+            {showSwitchTopicList && switchTopicListPosition && createPortal(
+              <div
+                ref={switchTopicListRef}
+                role="listbox"
+                className="fixed z-[200] max-h-48 overflow-auto rounded-md border border-slate-700 bg-slate-900 shadow-lg"
+                style={{
+                  top: switchTopicListPosition.top,
+                  left: switchTopicListPosition.left,
+                  width: switchTopicListPosition.width,
+                }}
+              >
+                {[
+                  { value: '0', label: '0 = disable MQTT-Nachricht' },
+                  { value: '1', label: '1 = MQTT auf Geräte-Topic' },
+                  { value: '2', label: '2 = Firmware-Default' },
+                ].map((opt) => (
+                  <div
+                    key={opt.value}
+                    role="option"
+                    aria-selected={switchTopicValue === opt.value}
+                    onClick={() => handleSwitchTopicOptionPick(opt.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        handleSwitchTopicOptionPick(opt.value)
+                      }
+                    }}
+                    className="cursor-pointer px-3 py-2 text-slate-200 hover:bg-slate-700 focus:bg-slate-700 focus:outline-none"
+                    tabIndex={0}
+                  >
+                    {opt.label}
+                  </div>
+                ))}
+              </div>,
+              document.body
+            )}
+          </div>
+        </label>
+      </div>
+
+      {showSwitchModeInfoModal && currentModeOption && createPortal(
+        <div
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setShowSwitchModeInfoModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowSwitchModeInfoModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="switchmode-modal-title"
+        >
+          <div
+            className="rounded-xl border border-slate-700 bg-slate-900 shadow-xl max-w-md w-full p-4 text-left"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="switchmode-modal-title" className="text-sm font-semibold text-slate-200 mb-2">
+              SwitchMode {currentModeOption.value}
+            </h3>
+            <p className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
+              {currentModeOption.description}
+            </p>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowSwitchModeInfoModal(false)}
+                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 hover:bg-slate-700"
+              >
+                Schließen
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function ButtonsConfigContent({ device, storeTick }: { device: DeviceInfo; storeTick?: number }) {
+  const buttonNumbers = useMemo(() => {
+    const raw = DeviceState.getRaw(device.id) as Record<string, unknown> | null | undefined
+    const fromTemplate = raw?.['stat/Template']
+    const fromResult = raw?.['stat/RESULT']
+    const payloadTemplate = fromTemplate && typeof fromTemplate === 'object' ? (fromTemplate as Record<string, unknown>) : undefined
+    const payloadResult = fromResult && typeof fromResult === 'object' ? (fromResult as Record<string, unknown>) : undefined
+    const gpioArray = Array.isArray(payloadTemplate?.GPIO)
+      ? (payloadTemplate!.GPIO as number[])
+      : Array.isArray(payloadResult?.GPIO)
+        ? (payloadResult!.GPIO as number[])
+        : []
+    return getButtonNumbersFromGpioArray(gpioArray).map(String)
+  }, [device.id, storeTick])
+  const [selectedButton, setSelectedButton] = useState<string>(buttonNumbers[0] ?? '1')
+  const properties = DeviceState.getProperties(device.id)
+  const currentState = properties?.Button && typeof properties.Button === 'object'
+    ? (properties.Button as Record<string, unknown>)[selectedButton]
+    : undefined
+  const stateDisplay = formatSwitchState(currentState)
+
+  useEffect(() => {
+    if (buttonNumbers.length > 0 && !buttonNumbers.includes(selectedButton)) {
+      setSelectedButton(buttonNumbers[0])
+    }
+  }, [buttonNumbers, selectedButton])
+
+  if (buttonNumbers.length === 0) {
+    return (
+      <p className="text-slate-400">Keine Buttons an diesem Gerät verfügbar.</p>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Button</span>
+          <select
+            value={selectedButton}
+            onChange={(e) => setSelectedButton(e.target.value)}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+          >
+            {buttonNumbers.map((num) => (
+              <option key={num} value={num}>
+                Button {num}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-slate-400">Zustand</span>
+          <div className="min-w-[5rem] rounded-md border border-slate-700 bg-slate-900/80 px-3 py-2 font-mono text-slate-200">
+            {stateDisplay}
+          </div>
+        </label>
+      </div>
+    </div>
+  )
+}
+
 function PowerChannelsBlock({
   deviceId,
   channels,
@@ -978,6 +1936,10 @@ export default function DeviceSettingsPage({
     if (!device?.id) return
     return DeviceState.subscribe(() => setStoreTick((t) => t + 1))
   }, [device?.id])
+  const consoleExpanded = device?.settingsUi?.consoleExpanded ?? true
+  const shortInfoExpanded = device?.settingsUi?.shortInfoExpanded ?? true
+  const collapsedBlockIds = new Set(device?.settingsUi?.collapsedBlockIds ?? [])
+
   useLayoutEffect(() => {
     const el = deviceTypeColumnRef.current
     if (!el) return
@@ -989,16 +1951,16 @@ export default function DeviceSettingsPage({
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [device?.id])
-  const consoleExpanded = device?.settingsUi?.consoleExpanded ?? true
-  const shortInfoExpanded = device?.settingsUi?.shortInfoExpanded ?? true
-  const collapsedBlockIds = new Set(device?.settingsUi?.collapsedBlockIds ?? [])
+  }, [device?.id, shortInfoExpanded])
 
   const setConsoleExpanded = (value: boolean) => {
     if (device) DeviceState.updateSettingsUi(device.id, { consoleExpanded: value })
   }
   const setShortInfoExpanded = (value: boolean) => {
-    if (device) DeviceState.updateSettingsUi(device.id, { shortInfoExpanded: value })
+    if (device) {
+      DeviceState.updateSettingsUi(device.id, { shortInfoExpanded: value })
+      DeviceState.triggerPersist(device.id)
+    }
   }
   const setCollapsed = (id: string, collapsed: boolean) => {
     if (!device) return
@@ -1501,8 +2463,17 @@ export default function DeviceSettingsPage({
                 </span>
               </button>
             </div>
+            {shortInfoExpanded && (
             <div className="min-h-[4rem] overflow-visible p-4 flex items-start gap-4">
-              <div ref={deviceTypeColumnRef} className="w-1/3 min-w-0">
+              <div
+                ref={deviceTypeColumnRef}
+                className="w-1/3 min-w-0 flex flex-col overflow-hidden shrink-0"
+                style={
+                  deviceTypeColumnHeight != null && deviceTypeColumnHeight > 0
+                    ? { height: `${deviceTypeColumnHeight}px`, minHeight: `${deviceTypeColumnHeight}px` }
+                    : undefined
+                }
+              >
                 <div className="w-full max-w-full overflow-visible">
                   <label htmlFor="device-type-input" className="mb-1 block text-xs font-medium text-slate-400">
                     Gerätetyp
@@ -1790,7 +2761,11 @@ export default function DeviceSettingsPage({
               </div>
               <div
                 className="w-1/6 min-w-0 flex flex-col overflow-hidden shrink-0"
-                style={deviceTypeColumnHeight != null && deviceTypeColumnHeight > 0 ? { maxHeight: `${deviceTypeColumnHeight}px` } : undefined}
+                style={
+                  deviceTypeColumnHeight != null && deviceTypeColumnHeight > 0
+                    ? { height: `${deviceTypeColumnHeight}px`, minHeight: `${deviceTypeColumnHeight}px` }
+                    : undefined
+                }
               >
                 <label className="mb-1 block shrink-0 text-xs font-medium text-slate-400">
                   GPIO-Zuordnungen
@@ -2134,6 +3109,7 @@ export default function DeviceSettingsPage({
                 </div>
               </div>
             </div>
+            )}
             <input
               ref={deviceTypeFileInputRef}
               type="file"
@@ -2482,6 +3458,20 @@ export default function DeviceSettingsPage({
                               <PowerConfigContent
                                 device={device}
                                 onSendCommand={onSendCommand}
+                              />
+                            ) : block.id === 'Switche' && device ? (
+                              <SwitcheConfigContent
+                                device={device}
+                                onSendCommand={onSendCommand}
+                                storeTick={storeTick}
+                              />
+                            ) : block.id === 'Buttons' && device ? (
+                              <ButtonsConfigContent device={device} storeTick={storeTick} />
+                            ) : block.id === 'WiFi' && device ? (
+                              <WiFiConfigContent
+                                device={device}
+                                onSendCommand={onSendCommand}
+                                storeTick={storeTick}
                               />
                             ) : null}
                           </ConfigBlock>

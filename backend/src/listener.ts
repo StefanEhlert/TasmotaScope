@@ -6,6 +6,7 @@
 import mqtt, { type MqttClient } from 'mqtt'
 import { createDeviceStore, type PersistSnapshot } from 'tasmotascope-shared'
 import {
+  deleteDeviceDoc,
   fetchBrokers,
   fetchDeviceSnapshots,
   type BrokerConfig,
@@ -24,6 +25,8 @@ const clientsByBrokerId = new Map<string, MqttClient>()
 const deviceConsoleLines = new Map<string, string[]>()
 const CONSOLE_MAX_LINES = 30
 let currentCouchDb: CouchDbSettings | null = null
+const OFFLINE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000 // 10 Minuten
+let offlineCleanupIntervalId: ReturnType<typeof setInterval> | null = null
 
 /** Debounce: WebButton-Abfragen pro Gerät höchstens alle 60s auslösen. */
 const lastWebButtonRequestByDevice = new Map<string, number>()
@@ -137,6 +140,41 @@ export async function startListener(couchdb: CouchDbSettings): Promise<void> {
   }
 
   console.log(`[Listener] ${brokers.length} Broker verbunden.`)
+
+  if (offlineCleanupIntervalId) clearInterval(offlineCleanupIntervalId)
+  offlineCleanupIntervalId = setInterval(cleanupOfflineDuplicateDevices, OFFLINE_CLEANUP_INTERVAL_MS)
+}
+
+function cleanupOfflineDuplicateDevices(): void {
+  const s = getDeviceStore()
+  const couchdb = currentCouchDb
+  if (!s || !couchdb) return
+  const map = s.getDevicesMap()
+  const toRemove: { deviceId: string; brokerId: string | undefined }[] = []
+  for (const [deviceId, record] of map) {
+    if (record.info.online !== false) continue
+    const ip = typeof record.info.ip === 'string' ? record.info.ip.trim() : ''
+    if (!ip) continue
+    let otherWithSameIp = false
+    for (const [otherId, otherRecord] of map) {
+      if (otherId === deviceId) continue
+      const otherIp = typeof otherRecord.info.ip === 'string' ? otherRecord.info.ip.trim() : ''
+      if (otherIp === ip) {
+        otherWithSameIp = true
+        break
+      }
+    }
+    if (otherWithSameIp) toRemove.push({ deviceId, brokerId: record.info.brokerId })
+  }
+  for (const { deviceId, brokerId } of toRemove) {
+    s.removeDevice(deviceId)
+    deviceConsoleLines.delete(deviceId)
+    if (brokerId) {
+      deleteDeviceDoc(couchdb, brokerId, deviceId).catch((err) => {
+        console.error(`[Listener] CouchDB Gerät ${deviceId} löschen fehlgeschlagen:`, err)
+      })
+    }
+  }
 }
 
 function connectBroker(broker: BrokerConfig) {
@@ -200,6 +238,8 @@ function connectBroker(broker: BrokerConfig) {
         data = { [type]: text.trim() }
       } else if (/^WebButton\d+$/i.test(type)) {
         data = { [type]: text.trim() }
+      } else if (/^(SSID1|SSID2|Password1|Password2)$/i.test(type)) {
+        data = { [type]: text.trim() }
       }
     }
     if (!data) return
@@ -243,6 +283,10 @@ function connectBroker(broker: BrokerConfig) {
 }
 
 export function stopListener(): void {
+  if (offlineCleanupIntervalId) {
+    clearInterval(offlineCleanupIntervalId)
+    offlineCleanupIntervalId = null
+  }
   for (const client of clientsByBrokerId.values()) {
     client.end(true)
   }

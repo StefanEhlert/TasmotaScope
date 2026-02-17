@@ -314,6 +314,42 @@ export async function deleteBrokerAndDevices(
   }
 }
 
+/** Löscht ein einzelnes Geräte-Dokument (z. B. Offline-Duplikat nach Topic-Wechsel). */
+export async function deleteDeviceDoc(
+  settings: CouchDbSettings,
+  brokerId: string,
+  deviceId: string
+): Promise<void> {
+  const baseUrl = buildBaseUrl(settings)
+  const headers = {
+    Authorization: buildAuthHeader(settings),
+    'Content-Type': 'application/json',
+  }
+  const normBrokerId = normalizeBrokerId(brokerId)
+  const docId = `device:${normBrokerId}:${deviceId}`
+  const dbName = encodeURIComponent(settings.database)
+  const docPath = `${baseUrl}/${dbName}/${encodeURIComponent(docId)}`
+
+  const getRes = await fetch(docPath, { method: 'GET', headers })
+  if (!getRes.ok) {
+    if (getRes.status === 404) return
+    throw new Error(`CouchDB Geräte-Dokument lesen fehlgeschlagen: ${await getRes.text()}`)
+  }
+  const doc = (await getRes.json()) as { _rev?: string }
+  const rev = doc._rev
+  if (!rev) return
+
+  const bulkRes = await fetch(`${baseUrl}/${dbName}/_bulk_docs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ docs: [{ _id: docId, _rev: rev, _deleted: true }] }),
+  })
+  if (!bulkRes.ok) {
+    throw new Error(`CouchDB Geräte-Dokument löschen fehlgeschlagen: ${await bulkRes.text()}`)
+  }
+  deviceRevCache.delete(docId)
+}
+
 export async function upsertDeviceSnapshot(
   settings: CouchDbSettings,
   snapshot: PersistSnapshot

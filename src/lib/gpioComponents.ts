@@ -403,3 +403,21 @@ export function getGpioAssignments(gpioArray: number[]): { gpio: number; label: 
     label: gpioCodeToLabel(typeof code === 'number' ? code : 0),
   }))
 }
+
+/**
+ * Ermittelt die Liste der Button-Nummern aus der GPIO-Template-Zuordnung (wie bei der GPIO-Anzeige).
+ * Buttons sind z. B. Button1, Button_n2, Button_i1 usw.; die Nummer wird extrahiert.
+ */
+export function getButtonNumbersFromGpioArray(gpioArray: number[]): number[] {
+  if (!Array.isArray(gpioArray)) return []
+  const assignments = getGpioAssignments(gpioArray)
+  const seen = new Set<number>()
+  for (const { label } of assignments) {
+    const m = /^Button(?:_n|_i|_in)?(\d+)$/i.exec(label)
+    if (m) {
+      const n = parseInt(m[1], 10)
+      if (Number.isFinite(n)) seen.add(n)
+    }
+  }
+  return Array.from(seen).sort((a, b) => a - b)
+}
