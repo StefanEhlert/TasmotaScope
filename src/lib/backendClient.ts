@@ -1,17 +1,21 @@
 import type { BrokerConfig, CouchDbSettings } from './types'
 
-const BACKEND_BASE = '/api'
+/** Wenn gesetzt (z. B. VITE_API_BASE=https://server/api): alle Requests und SSE gehen dorthin. So sehen lokales und remote Frontend denselben Stand. */
+const EXPLICIT_BASE =
+  typeof import.meta !== 'undefined' &&
+  import.meta.env?.VITE_API_BASE &&
+  String(import.meta.env.VITE_API_BASE).trim()
+    ? String(import.meta.env.VITE_API_BASE).trim().replace(/\/$/, '')
+    : undefined
 
-/** In Dev: direkte Backend-URL, damit SSE den Vite-Proxy umgeht (kein Buffering). */
-const SSE_BASE =
-  typeof import.meta !== 'undefined' && import.meta.env?.DEV
-    ? 'http://localhost:3001'
-    : ''
+/** Basis-URL für API (inkl. /api). In Dev ohne VITE_API_BASE: direkt localhost:3001/api, damit PATCH und SSE dasselbe Backend nutzen. */
+const BACKEND_BASE =
+  EXPLICIT_BASE ??
+  (typeof import.meta !== 'undefined' && import.meta.env?.DEV ? 'http://localhost:3001/api' : '/api')
 
 export function getDevicesStreamUrl(): string {
-  const base = SSE_BASE || BACKEND_BASE
-  const path = SSE_BASE ? '/api/devices/stream' : '/devices/stream'
-  return `${base.replace(/\/$/, '')}${path}`
+  const base = BACKEND_BASE.replace(/\/$/, '')
+  return `${base}/devices/stream`
 }
 
 export type BackupInfo = {

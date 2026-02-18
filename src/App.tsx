@@ -97,6 +97,8 @@ function App() {
   const lastDeviceTypeUpdateRef = useRef<{ deviceId: string; value: string | undefined; at: number } | null>(null)
   /** Ignoriert out-of-order SSE-Events (z. B. über VPN); nur neuere Sequenz anwenden. */
   const lastSseSequenceRef = useRef<number>(-1)
+  /** Zeitpunkt des letzten angewendeten SSE-Events (für Sync-Fallback bei Proxy/VPN). */
+  const lastSseEventTimeRef = useRef<number>(Date.now())
 
   useEffect(() => {
     let cancelled = false
@@ -242,6 +244,7 @@ function App() {
       if (typeof seq === 'number') {
         if (seq <= lastSseSequenceRef.current) return
         lastSseSequenceRef.current = seq
+        lastSseEventTimeRef.current = Date.now()
       }
       const { _sequence: _seq, ...rest } = data
       const asRecord = rest as Record<string, Record<string, unknown>>
@@ -305,9 +308,20 @@ function App() {
     void fetchDevicesFromBackend().then(apply)
     void runStream()
 
+    /** Fallback: Wenn lange kein SSE ankommt (z. B. Proxy/VPN), Geräteliste einmal nachziehen. */
+    const SSE_STALE_MS = 45_000
+    const SSE_CHECK_MS = 20_000
+    const staleCheckInterval = setInterval(() => {
+      if (cancelled) return
+      if (Date.now() - lastSseEventTimeRef.current < SSE_STALE_MS) return
+      lastSseEventTimeRef.current = Date.now()
+      void fetchDevicesFromBackend().then(apply)
+    }, SSE_CHECK_MS)
+
     return () => {
       cancelled = true
       abortController?.abort()
+      clearInterval(staleCheckInterval)
     }
   }, [couchState])
 
