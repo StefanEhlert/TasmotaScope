@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express'
 import cors from 'cors'
 import { Router } from 'express'
-import { backupRouter, runScheduledAutoBackups } from './backup.js'
+import { createBackupRouter, runScheduledAutoBackups } from './backup.js'
 import {
   createBroker,
   deleteBrokerAndDevices,
@@ -140,7 +140,57 @@ function devicesWithConsole(): Record<string, Record<string, unknown>> {
   return out
 }
 
-/** Geräteliste inkl. Konsolen; Backup-Daten aus CouchDB (Single Source of Truth), nicht aus dem Store. */
+/** Backup-Daten gecacht, um nicht bei jedem MQTT-Update CouchDB zu laden (vermeidet OOM). */
+const backupCache = new Map<
+  string,
+  { backupCount: number; backupItems: { createdAt: string; data?: string }[]; daysSinceBackup: number | null }
+>()
+let backupCacheIntervalId: ReturnType<typeof setInterval> | null = null
+const BACKUP_CACHE_REFRESH_MS = 30_000
+
+function refreshBackupCache(): void {
+  const couchdb = getCouchDb()
+  if (!couchdb) return
+  void fetchDeviceSnapshots(couchdb)
+    .then((docs) => {
+      backupCache.clear()
+      for (const doc of docs) {
+        const backups = doc.backups
+        if (backups) {
+          const rawItems = (backups.items ?? []) as Array<{ createdAt: string; data?: string }>
+          backupCache.set(doc.deviceId, {
+            backupCount: backups.count,
+            backupItems: rawItems.map((item) => ({
+              createdAt: item.createdAt,
+              ...(typeof item.data === 'string' ? { data: item.data } : {}),
+            })),
+            daysSinceBackup:
+              backups.lastAt != null
+                ? Math.floor((Date.now() - new Date(backups.lastAt).getTime()) / 86400000)
+                : null,
+          })
+        }
+      }
+    })
+    .catch((err) => console.error('[Backup-Cache] Aktualisierung fehlgeschlagen:', err))
+}
+
+/** Geräteliste inkl. Konsolen; Backup-Daten aus Cache (regelmäßig + bei Backup/Delete aktualisiert). */
+function devicesWithConsoleFromCache(): Record<string, Record<string, unknown>> {
+  const base = devicesWithConsole()
+  for (const id of Object.keys(base)) {
+    const cached = backupCache.get(id)
+    if (cached) {
+      ;(base[id] as Record<string, unknown>).backupCount = cached.backupCount
+      ;(base[id] as Record<string, unknown>).backupItems =
+        cached.backupItems.length > 0 ? cached.backupItems : []
+      ;(base[id] as Record<string, unknown>).daysSinceBackup = cached.daysSinceBackup
+    }
+  }
+  return base
+}
+
+/** Einmalig Backup-Daten aus CouchDB laden (für GET /devices + erster SSE-Snapshot); füllt auch backupCache. */
 async function devicesWithConsoleFromCouchDb(): Promise<Record<string, Record<string, unknown>>> {
   const base = devicesWithConsole()
   const couchdb = getCouchDb()
@@ -157,12 +207,14 @@ async function devicesWithConsoleFromCouchDb(): Promise<Record<string, Record<st
           createdAt: item.createdAt,
           ...(typeof item.data === 'string' ? { data: item.data } : {}),
         }))
-        ;(base[id] as Record<string, unknown>).backupCount = backups.count
-        ;(base[id] as Record<string, unknown>).backupItems = items.length > 0 ? items : []
-        ;(base[id] as Record<string, unknown>).daysSinceBackup =
+        const daysSinceBackup =
           backups.lastAt != null
             ? Math.floor((Date.now() - new Date(backups.lastAt).getTime()) / 86400000)
             : null
+        ;(base[id] as Record<string, unknown>).backupCount = backups.count
+        ;(base[id] as Record<string, unknown>).backupItems = items.length > 0 ? items : []
+        ;(base[id] as Record<string, unknown>).daysSinceBackup = daysSinceBackup
+        backupCache.set(id, { backupCount: backups.count, backupItems: items, daysSinceBackup })
       }
     }
   } catch (err) {
@@ -177,7 +229,10 @@ statusRouter.get('/devices', async (_req: Request, res: Response) => {
   res.json(data)
 })
 
-statusRouter.post('/command', (req: Request, res: Response) => {
+/** Nach Befehl kurz warten, dann aktuelle Konsole in Response – gleiche HTTP-Anfrage, kein zweiter Kanal (hilft bei Proxy-Verzögerung). */
+const COMMAND_AWAIT_CONSOLE_MS = 2200
+
+statusRouter.post('/command', async (req: Request, res: Response) => {
   const body = req.body as { deviceId?: unknown; topic?: unknown; payload?: unknown }
   const deviceId = typeof body.deviceId === 'string' ? body.deviceId.trim() : ''
   const topic = typeof body.topic === 'string' ? body.topic.trim() : ''
@@ -191,7 +246,10 @@ statusRouter.post('/command', (req: Request, res: Response) => {
     res.status(503).json({ error: 'Listener nicht aktiv oder Gerät/Broker nicht verbunden' })
     return
   }
-  res.json({ ok: true })
+  await new Promise((r) => setTimeout(r, COMMAND_AWAIT_CONSOLE_MS))
+  const consoles = getDeviceConsoleLines()
+  const consoleLines = consoles[deviceId] ?? []
+  res.json({ ok: true, deviceId, console: consoleLines })
 })
 
 const sseClients = new Set<{ res: Response }>()
@@ -199,36 +257,74 @@ let sseSequence = 0
 let sseUnsubscribe: (() => void) | null = null
 let sseBroadcastInProgress = false
 let sseBroadcastDirty = false
+let sseKeepaliveIntervalId: ReturnType<typeof setInterval> | null = null
+let sseBroadcastDebounceId: ReturnType<typeof setTimeout> | null = null
 
-function runBroadcastSnapshot(): void {
+const SSE_KEEPALIVE_MS = 10_000
+const SSE_BROADCAST_DEBOUNCE_MS = 1500
+
+function startSseKeepalive(): void {
+  if (sseKeepaliveIntervalId) return
+  sseKeepaliveIntervalId = setInterval(() => {
+    const payload = ': keepalive\n\n'
+    for (const { res } of sseClients) {
+      try {
+        res.write(payload)
+        const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+        if (sock?.flush) sock.flush()
+      } catch {
+        // Client evtl. getrennt
+      }
+    }
+  }, SSE_KEEPALIVE_MS)
+}
+
+function stopSseKeepalive(): void {
+  if (sseKeepaliveIntervalId) {
+    clearInterval(sseKeepaliveIntervalId)
+    sseKeepaliveIntervalId = null
+  }
+}
+
+function doBroadcastSnapshot(): void {
   if (sseBroadcastInProgress) {
     sseBroadcastDirty = true
     return
   }
   sseBroadcastInProgress = true
-  void (async () => {
-    try {
-      const base = await devicesWithConsoleFromCouchDb()
-      sseSequence += 1
-      const data = { _sequence: sseSequence, ...base }
-      const payload = `data: ${JSON.stringify(data)}\n\n`
-      for (const { res } of sseClients) {
-        try {
-          res.write(payload)
-          const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
-          if (sock?.flush) sock.flush()
-        } catch {
-          // Client evtl. getrennt
-        }
-      }
-    } finally {
-      sseBroadcastInProgress = false
-      if (sseBroadcastDirty) {
-        sseBroadcastDirty = false
-        runBroadcastSnapshot()
+  try {
+    const base = devicesWithConsoleFromCache()
+    sseSequence += 1
+    const data = { _sequence: sseSequence, ...base }
+    const payload = `data: ${JSON.stringify(data)}\n\n`
+    for (const { res } of sseClients) {
+      try {
+        res.write(payload)
+        const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+        if (sock?.flush) sock.flush()
+      } catch {
+        // Client evtl. getrennt
       }
     }
-  })()
+  } finally {
+    sseBroadcastInProgress = false
+    if (sseBroadcastDirty) {
+      sseBroadcastDirty = false
+      scheduleBroadcastSnapshot()
+    }
+  }
+}
+
+function scheduleBroadcastSnapshot(): void {
+  if (sseBroadcastDebounceId) clearTimeout(sseBroadcastDebounceId)
+  sseBroadcastDebounceId = setTimeout(() => {
+    sseBroadcastDebounceId = null
+    doBroadcastSnapshot()
+  }, SSE_BROADCAST_DEBOUNCE_MS)
+}
+
+function runBroadcastSnapshot(): void {
+  scheduleBroadcastSnapshot()
 }
 
 statusRouter.get('/devices/stream', async (_req: Request, res: Response) => {
@@ -254,6 +350,13 @@ statusRouter.get('/devices/stream', async (_req: Request, res: Response) => {
   }
 
   sseClients.add({ res })
+  if (sseClients.size === 1) {
+    startSseKeepalive()
+    if (!backupCacheIntervalId) {
+      refreshBackupCache()
+      backupCacheIntervalId = setInterval(refreshBackupCache, BACKUP_CACHE_REFRESH_MS)
+    }
+  }
   if (sseUnsubscribe === null) {
     sseUnsubscribe = store.subscribe(runBroadcastSnapshot)
   }
@@ -265,9 +368,20 @@ statusRouter.get('/devices/stream', async (_req: Request, res: Response) => {
         break
       }
     }
-    if (sseClients.size === 0 && sseUnsubscribe) {
-      sseUnsubscribe()
-      sseUnsubscribe = null
+    if (sseClients.size === 0) {
+      stopSseKeepalive()
+      if (sseBroadcastDebounceId) {
+        clearTimeout(sseBroadcastDebounceId)
+        sseBroadcastDebounceId = null
+      }
+      if (backupCacheIntervalId) {
+        clearInterval(backupCacheIntervalId)
+        backupCacheIntervalId = null
+      }
+      if (sseUnsubscribe) {
+        sseUnsubscribe()
+        sseUnsubscribe = null
+      }
     }
   })
 })
@@ -538,7 +652,7 @@ statusRouter.post('/blakadder/sync', async (_req: Request, res: Response) => {
 app.use(cors())
 app.use(express.json({ limit: '1mb' }))
 app.use('/api', statusRouter)
-app.use('/api', backupRouter)
+app.use('/api', createBackupRouter(getCouchDb, refreshBackupCache))
 
 const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 Stunden
 const BLAKADDER_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 Stunden

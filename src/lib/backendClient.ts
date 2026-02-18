@@ -8,10 +8,8 @@ const EXPLICIT_BASE =
     ? String(import.meta.env.VITE_API_BASE).trim().replace(/\/$/, '')
     : undefined
 
-/** Basis-URL für API (inkl. /api). In Dev ohne VITE_API_BASE: direkt localhost:3001/api, damit PATCH und SSE dasselbe Backend nutzen. */
-const BACKEND_BASE =
-  EXPLICIT_BASE ??
-  (typeof import.meta !== 'undefined' && import.meta.env?.DEV ? 'http://localhost:3001/api' : '/api')
+/** Basis-URL für API (inkl. /api). Relativ (/api), damit Aufruf von anderem PC (z. B. 192.168.1.20:5173) über Vite-Proxy zum Backend geht. */
+const BACKEND_BASE = EXPLICIT_BASE ?? '/api'
 
 export function getDevicesStreamUrl(): string {
   const base = BACKEND_BASE.replace(/\/$/, '')
@@ -21,6 +19,8 @@ export function getDevicesStreamUrl(): string {
 export type BackupInfo = {
   lastTimestamp: string | null
   count: number
+  /** Vom Backend zurückgegeben, damit das Frontend die Liste ohne CouchDB-Zugriff aktualisieren kann. */
+  items?: { createdAt: string; data?: string }[]
 }
 
 export type BackendStatus = {
@@ -157,24 +157,31 @@ export async function patchDeviceInfo(
   }
 }
 
-/** Sendet einen MQTT-Befehl über das Backend (POST /api/command). */
+export type CommandResponse = {
+  ok: boolean
+  deviceId?: string
+  console?: string[]
+}
+
+/** Sendet einen MQTT-Befehl über das Backend (POST /api/command). Response enthält nach kurzer Wartezeit die aktuelle Konsole (für sofortige Anzeige im Remote-Frontend). */
 export async function sendCommand(
   baseUrl: string | undefined,
   deviceId: string,
   topic: string,
   payload: string
-): Promise<void> {
+): Promise<CommandResponse> {
   const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/command'
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ deviceId, topic, payload }),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(10000),
   })
+  const data = (await res.json().catch(() => ({}))) as CommandResponse & { error?: string }
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error((data as { error?: string }).error ?? res.statusText)
+    throw new Error(data.error ?? res.statusText)
   }
+  return data
 }
 
 export async function postBroker(baseUrl: string | undefined, broker: BrokerConfig): Promise<void> {
@@ -245,6 +252,7 @@ export async function requestBackup(
   return {
     lastTimestamp: data.lastTimestamp ?? null,
     count: data.count ?? 0,
+    items: data.items ?? [],
   }
 }
 

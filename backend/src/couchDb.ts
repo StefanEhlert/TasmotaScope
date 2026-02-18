@@ -491,32 +491,55 @@ export async function upsertDeviceSnapshot(
     throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
   }
 
-  const retryGet = await fetch(docPath, { method: 'GET', headers })
-  if (!retryGet.ok) {
-    const detail = await retryGet.text()
-    throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
+  const maxRetries = 3
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const retryGet = await fetch(docPath, { method: 'GET', headers })
+    if (!retryGet.ok) {
+      const detail = await retryGet.text()
+      throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
+    }
+    const existing = (await retryGet.json()) as {
+      _rev?: string
+      backups?: DeviceBackups
+      rules?: Record<string, RuleConfig>
+      webButtonLabels?: Record<string, string>
+      settingsUi?: DeviceSettingsUi
+      autoBackupIntervalDays?: number | null
+      deviceType?: string
+      deviceTypeImages?: string[]
+      deviceTypeCustomLinks?: Array<{ title?: string; url?: string }>
+      location?: string
+      room?: string
+      projectDescription?: string
+    }
+    rev = existing._rev
+    const retryPayload = {
+      ...payload,
+      ...(existing.backups ? { backups: existing.backups } : {}),
+      ...(existing.rules ? { rules: existing.rules } : {}),
+      ...(existing.webButtonLabels ? { webButtonLabels: existing.webButtonLabels } : {}),
+      ...(existing.settingsUi !== undefined ? { settingsUi: existing.settingsUi } : {}),
+      ...(existing.autoBackupIntervalDays !== undefined ? { autoBackupIntervalDays: existing.autoBackupIntervalDays } : {}),
+      ...(existing.deviceType !== undefined ? { deviceType: existing.deviceType } : {}),
+      ...(existing.deviceTypeImages !== undefined ? { deviceTypeImages: existing.deviceTypeImages } : {}),
+      ...(existing.deviceTypeCustomLinks !== undefined ? { deviceTypeCustomLinks: existing.deviceTypeCustomLinks } : {}),
+      ...(existing.location !== undefined ? { location: existing.location } : {}),
+      ...(existing.room !== undefined ? { room: existing.room } : {}),
+      ...(existing.projectDescription !== undefined ? { projectDescription: existing.projectDescription } : {}),
+      ...(rev ? { _rev: rev } : {}),
+    }
+    const retryPut = await fetch(docPath, { method: 'PUT', headers, body: JSON.stringify(retryPayload) })
+    if (retryPut.ok) {
+      const retryResult = (await retryPut.json()) as { rev?: string }
+      if (retryResult.rev) deviceRevCache.set(docId, retryResult.rev)
+      return
+    }
+    if (retryPut.status !== 409) {
+      const detail = await retryPut.text()
+      throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
+    }
   }
-  const existing = (await retryGet.json()) as {
-    _rev?: string
-    backups?: DeviceBackups
-    rules?: Record<string, RuleConfig>
-    webButtonLabels?: Record<string, string>
-  }
-  rev = existing._rev
-  const retryPayload = {
-    ...payload,
-    ...(existing.backups ? { backups: existing.backups } : {}),
-    ...(existing.rules ? { rules: existing.rules } : {}),
-    ...(existing.webButtonLabels ? { webButtonLabels: existing.webButtonLabels } : {}),
-    ...(rev ? { _rev: rev } : {}),
-  }
-  const retryPut = await fetch(docPath, { method: 'PUT', headers, body: JSON.stringify(retryPayload) })
-  if (!retryPut.ok) {
-    const detail = await retryPut.text()
-    throw new Error(`CouchDB-Speichern fehlgeschlagen: ${detail}`)
-  }
-  const retryResult = (await retryPut.json()) as { rev?: string }
-  if (retryResult.rev) deviceRevCache.set(docId, retryResult.rev)
+  throw new Error('CouchDB-Speichern fehlgeschlagen: Document update conflict (mehrere Versuche).')
 }
 
 /** Für Rehydration: alle Geräte-Docs aus CouchDB laden. */

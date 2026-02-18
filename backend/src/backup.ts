@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 
 const MAX_BACKUPS_PER_DEVICE = 10
 
@@ -9,6 +9,15 @@ type CouchDbSettings = {
   username: string
   password: string
   database: string
+}
+
+/** Wenn Frontend keine CouchDB-Host sendet (z. B. neuer Browser), Backend-Config nutzen. */
+function resolveCouchDb(
+  fromBody: CouchDbSettings | undefined,
+  getServerCouchDb: () => CouchDbSettings | null
+): CouchDbSettings | null {
+  if (fromBody?.host?.trim()) return fromBody
+  return getServerCouchDb()
 }
 
 type DeviceBackupItem = {
@@ -52,17 +61,21 @@ function normalizeBrokerId(brokerId?: string): string {
   return value && value.length > 0 ? value : 'default'
 }
 
-export const backupRouter = Router()
+export function createBackupRouter(
+  getServerCouchDb: () => CouchDbSettings | null,
+  onBackupChange?: () => void
+): Router {
+  const backupRouter = Router()
 
-backupRouter.get('/health', (_req, res) => {
-  res.json({ ok: true })
-})
+  backupRouter.get('/health', (_req, res) => {
+    res.json({ ok: true })
+  })
 
-/** Führt ein Backup für ein Gerät durch (Tasmota /dl abrufen, in CouchDB speichern). */
-export async function performBackup(
-  couchdb: CouchDbSettings,
-  params: { host: string; deviceId: string; brokerId?: string },
-): Promise<{ lastTimestamp: string | null; count: number; items: DeviceBackupItem[] }> {
+  /** Führt ein Backup für ein Gerät durch (Tasmota /dl abrufen, in CouchDB speichern). */
+  async function performBackup(
+    couchdb: CouchDbSettings,
+    params: { host: string; deviceId: string; brokerId?: string },
+  ): Promise<{ lastTimestamp: string | null; count: number; items: DeviceBackupItem[] }> {
   const { host, deviceId, brokerId } = params
   const tasmotaUrl = `http://${host.replace(/^https?:\/\//, '')}/dl`
   const response = await fetch(tasmotaUrl, {
@@ -138,23 +151,28 @@ export async function performBackup(
   }
 
   return { lastTimestamp: backups.lastAt, count: backups.count, items: backups.items }
-}
+  }
 
-backupRouter.post('/backup', async (req, res) => {
-  try {
-    const { host, deviceId, brokerId, couchdb } = req.body as {
-      host?: string
-      deviceId?: string
-      brokerId?: string
-      couchdb?: CouchDbSettings
-    }
+  backupRouter.post('/backup', async (req, res) => {
+    try {
+      const { host, deviceId, brokerId, couchdb: couchdbBody } = req.body as {
+        host?: string
+        deviceId?: string
+        brokerId?: string
+        couchdb?: CouchDbSettings
+      }
 
-    if (!host || !deviceId || !couchdb) {
-      res.status(400).json({ error: 'host, deviceId und couchdb sind erforderlich' })
-      return
-    }
+      if (!host || !deviceId) {
+        res.status(400).json({ error: 'host und deviceId sind erforderlich' })
+        return
+      }
+      const couchdb = resolveCouchDb(couchdbBody, getServerCouchDb)
+      if (!couchdb?.host?.trim()) {
+        res.status(400).json({ error: 'CouchDB-Konfiguration fehlt (im Modal eingeben oder Backend-Env setzen)' })
+        return
+      }
 
-    const result = await performBackup(couchdb, { host, deviceId, brokerId })
+      const result = await performBackup(couchdb, { host, deviceId, brokerId })
     const { getDeviceStore } = await import('./listener.js')
     const store = getDeviceStore()
     if (store) {
@@ -164,31 +182,42 @@ backupRouter.post('/backup', async (req, res) => {
         daysSinceBackup: 0,
       })
     }
-    res.json({ ok: true, lastTimestamp: result.lastTimestamp, count: result.count })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unbekannter Fehler'
-    res.status(500).json({ error: `Backup fehlgeschlagen: ${message}` })
-  }
-})
-
-backupRouter.post('/backup/delete', async (req, res) => {
-  try {
-    const { deviceId, brokerId, couchdb, index } = req.body as {
-      deviceId?: string
-      brokerId?: string
-      couchdb?: CouchDbSettings
-      index?: number
-    }
-
-    if (!deviceId || !couchdb || typeof index !== 'number' || index < 0) {
-      res.status(400).json({
-        error: 'deviceId, couchdb und index (Nummer) sind erforderlich',
+      res.json({
+        ok: true,
+        lastTimestamp: result.lastTimestamp,
+        count: result.count,
+        items: result.items.map((item) => ({ createdAt: item.createdAt, data: item.data })),
       })
-      return
+      onBackupChange?.()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unbekannter Fehler'
+      res.status(500).json({ error: `Backup fehlgeschlagen: ${message}` })
     }
+  })
 
-    const brokerIdNorm = normalizeBrokerId(brokerId)
-    const baseUrl = buildCouchDbBaseUrl(couchdb)
+  backupRouter.post('/backup/delete', async (req, res) => {
+    try {
+      const { deviceId, brokerId, couchdb: couchdbBody, index } = req.body as {
+        deviceId?: string
+        brokerId?: string
+        couchdb?: CouchDbSettings
+        index?: number
+      }
+
+      if (!deviceId || typeof index !== 'number' || index < 0) {
+        res.status(400).json({
+          error: 'deviceId und index (Nummer) sind erforderlich',
+        })
+        return
+      }
+      const couchdb = resolveCouchDb(couchdbBody, getServerCouchDb)
+      if (!couchdb?.host?.trim()) {
+        res.status(400).json({ error: 'CouchDB-Konfiguration fehlt' })
+        return
+      }
+
+      const brokerIdNorm = normalizeBrokerId(brokerId)
+      const baseUrl = buildCouchDbBaseUrl(couchdb)
     const headers: Record<string, string> = {
       Authorization: buildBasicAuthHeader(couchdb),
       'Content-Type': 'application/json',
@@ -255,27 +284,33 @@ backupRouter.post('/backup/delete', async (req, res) => {
     }
 
     res.json({ ok: true, count: backups.count, lastAt: backups.lastAt })
+    onBackupChange?.()
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unbekannter Fehler'
     res.status(500).json({ error: `Backup löschen fehlgeschlagen: ${message}` })
   }
 })
 
-/** Liefert die Backup-Daten eines einzelnen Eintrags (für Download). CouchDB nur über Backend. */
-backupRouter.post('/backup/download', async (req, res) => {
-  try {
-    const { deviceId, brokerId, index, couchdb } = req.body as {
-      deviceId?: string
-      brokerId?: string
-      index?: number
-      couchdb?: CouchDbSettings
-    }
-    if (!deviceId || !couchdb || typeof index !== 'number' || index < 0) {
-      res.status(400).json({ error: 'deviceId, couchdb und index (Nummer) sind erforderlich' })
-      return
-    }
-    const brokerIdNorm = normalizeBrokerId(brokerId)
-    const baseUrl = buildCouchDbBaseUrl(couchdb)
+  /** Liefert die Backup-Daten eines einzelnen Eintrags (für Download). CouchDB nur über Backend. */
+  backupRouter.post('/backup/download', async (req, res) => {
+    try {
+      const { deviceId, brokerId, index, couchdb: couchdbBody } = req.body as {
+        deviceId?: string
+        brokerId?: string
+        index?: number
+        couchdb?: CouchDbSettings
+      }
+      if (!deviceId || typeof index !== 'number' || index < 0) {
+        res.status(400).json({ error: 'deviceId und index (Nummer) sind erforderlich' })
+        return
+      }
+      const couchdb = resolveCouchDb(couchdbBody, getServerCouchDb)
+      if (!couchdb?.host?.trim()) {
+        res.status(400).json({ error: 'CouchDB-Konfiguration fehlt' })
+        return
+      }
+      const brokerIdNorm = normalizeBrokerId(brokerId)
+      const baseUrl = buildCouchDbBaseUrl(couchdb)
     const headers: Record<string, string> = {
       Authorization: buildBasicAuthHeader(couchdb),
     }
@@ -305,6 +340,77 @@ backupRouter.post('/backup/download', async (req, res) => {
     res.status(500).json({ error: `Backup-Download fehlgeschlagen: ${message}` })
   }
 })
+
+  return backupRouter
+}
+
+/** Führt ein Backup für ein Gerät durch (für runScheduledAutoBackups). */
+export async function performBackup(
+  couchdb: CouchDbSettings,
+  params: { host: string; deviceId: string; brokerId?: string },
+): Promise<{ lastTimestamp: string | null; count: number; items: DeviceBackupItem[] }> {
+  const protocol = couchdb.useTls ? 'https' : 'http'
+  const baseUrl = `${protocol}://${couchdb.host}:${couchdb.port}`
+  const { host, deviceId, brokerId } = params
+  const tasmotaUrl = `http://${host.replace(/^https?:\/\//, '')}/dl`
+  const response = await fetch(tasmotaUrl, { signal: AbortSignal.timeout(10000) })
+  if (!response.ok) {
+    throw new Error(`Tasmota-Gerät nicht erreichbar: ${response.status} ${response.statusText}`)
+  }
+  const buffer = await response.arrayBuffer()
+  const base64 = Buffer.from(buffer).toString('base64')
+  const createdAt = new Date().toISOString()
+  const brokerIdNorm = normalizeBrokerId(brokerId)
+  const headers: Record<string, string> = {
+    Authorization: buildBasicAuthHeader(couchdb),
+    'Content-Type': 'application/json',
+  }
+  const dbName = encodeURIComponent(couchdb.database)
+  const docId = `device:${brokerIdNorm}:${deviceId}`
+  const docPath = `${baseUrl}/${dbName}/${encodeURIComponent(docId)}`
+  let existing: DeviceDoc | null = null
+  const getRes = await fetch(docPath, { method: 'GET', headers })
+  if (getRes.ok) {
+    existing = (await getRes.json()) as DeviceDoc
+  }
+  const currentBackups: DeviceBackups = existing?.backups ?? {
+    count: 0,
+    lastAt: null,
+    items: [],
+  }
+  const newItem: DeviceBackupItem = { data: base64, createdAt }
+  const items = [newItem, ...currentBackups.items].slice(0, MAX_BACKUPS_PER_DEVICE)
+  const backups: DeviceBackups = {
+    count: items.length,
+    lastAt: items[0]?.createdAt ?? null,
+    items,
+  }
+  const doc: DeviceDoc = existing
+    ? { ...existing, backups, updatedAt: new Date().toISOString() }
+    : {
+        _id: docId,
+        deviceId,
+        brokerId: brokerIdNorm,
+        backups,
+        lastSeen: new Date().toISOString(),
+        topic: deviceId,
+        fields: {},
+        raw: {},
+        updatedAt: new Date().toISOString(),
+      }
+  const putRes = await fetch(docPath, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      ...doc,
+      ...(existing?._rev ? { _rev: existing._rev } : {}),
+    }),
+  })
+  if (!putRes.ok) {
+    throw new Error(`CouchDB-Speichern fehlgeschlagen: ${await putRes.text()}`)
+  }
+  return { lastTimestamp: backups.lastAt, count: backups.count, items: backups.items }
+}
 
 /** Liest alle Geräte-Dokumente aus CouchDB. */
 async function fetchDeviceDocs(

@@ -5,7 +5,6 @@ import DeviceList from './components/DeviceList'
 import DeviceSettingsPage from './components/DeviceSettingsPage'
 import RulesPage from './components/RulesPage'
 import { DeviceState } from './DeviceState'
-import { fetchDeviceSnapshot } from './lib/couchDb'
 import {
   deleteBroker,
   fetchBrokersFromBackend,
@@ -99,6 +98,8 @@ function App() {
   const lastSseSequenceRef = useRef<number>(-1)
   /** Zeitpunkt des letzten angewendeten SSE-Events (für Sync-Fallback bei Proxy/VPN). */
   const lastSseEventTimeRef = useRef<number>(Date.now())
+  /** Konsole aus POST /command-Response sofort in lastApiDevices übernehmen (umgeht Proxy-Verzögerung). */
+  const injectConsoleFromCommandRef = useRef<((deviceId: string, lines: string[]) => void) | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -213,8 +214,26 @@ function App() {
   }, [settings])
 
   useEffect(() => {
+    injectConsoleFromCommandRef.current = (deviceId, lines) => {
+      setLastApiDevices((prev) => ({
+        ...prev,
+        [deviceId]: { ...(prev[deviceId] as Record<string, unknown> || {}), console: lines },
+      }))
+    }
+    return () => {
+      injectConsoleFromCommandRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
     DeviceState.setCommandSender((deviceId, topic, payload) => {
-      void sendCommand(undefined, deviceId, topic, payload).catch(() => {})
+      void sendCommand(undefined, deviceId, topic, payload)
+        .then((data) => {
+          if (data?.deviceId && Array.isArray(data.console)) {
+            injectConsoleFromCommandRef.current?.(data.deviceId, data.console)
+          }
+        })
+        .catch(() => {})
     })
     DeviceState.setPersistFn((snapshot) => {
       return patchDeviceInfo(undefined, snapshot.deviceId, {
@@ -447,28 +466,18 @@ function App() {
     if (device.online !== true) return
     setBackingUp((prev) => ({ ...prev, [deviceId]: true }))
     try {
-      await requestBackup(undefined, {
+      const data = await requestBackup(undefined, {
         host: device.ip,
         deviceId,
         brokerId: device.brokerId ?? activeBrokerRef.current ?? undefined,
         couchdb: settingsRef.current.couchdb,
       })
-      // Backup-Liste aus CouchDB nachziehen, damit die UI sofort aktualisiert wird
-      const snapshot = await fetchDeviceSnapshot(
-        settingsRef.current.couchdb,
-        deviceId,
-        device.brokerId ?? activeBrokerRef.current ?? undefined,
-      )
-      if (snapshot) {
-        DeviceState.hydrateFromSnapshots([snapshot])
-      } else {
-        const info = { count: (device.backupCount ?? 0) + 1, lastTimestamp: new Date().toISOString() }
-        const days = 0
-        DeviceState.updateInfo(deviceId, {
-          daysSinceBackup: days,
-          backupCount: info.count,
-        })
-      }
+      // Backend liefert die Backup-Liste in der Response – kein CouchDB-Zugriff vom Frontend nötig
+      DeviceState.updateInfo(deviceId, {
+        backupCount: data.count,
+        backupItems: data.items?.length ? data.items : undefined,
+        daysSinceBackup: 0,
+      })
     } catch (err) {
       console.error('Backup fehlgeschlagen:', err)
       alert(`Backup fehlgeschlagen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`)
@@ -863,9 +872,12 @@ function App() {
                   </svg>
                 </button>
               </div>
-              <div className="flex items-center gap-2 lg:justify-self-end">
-                {statusPill('MQTT', mqttState)}
-                {statusPill('CouchDB', couchState)}
+              <div className="flex flex-col items-end gap-1.5">
+                <div className="flex items-center gap-2">
+                  {statusPill('MQTT', mqttState)}
+                  {statusPill('CouchDB', couchState)}
+                </div>
+                <span className="text-[10px] text-slate-500" aria-hidden="true">v{__APP_VERSION__}</span>
               </div>
             </div>
           </div>
