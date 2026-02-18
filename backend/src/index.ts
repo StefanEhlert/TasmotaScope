@@ -152,9 +152,10 @@ async function devicesWithConsoleFromCouchDb(): Promise<Record<string, Record<st
       const doc = byId.get(id)
       const backups = doc?.backups
       if (backups) {
-        const items = (backups.items ?? []).map((item: { createdAt: string; data?: string }) => ({
+        const rawItems = (backups.items ?? []) as Array<{ createdAt: string; data?: string }>
+        const items = rawItems.map((item) => ({
           createdAt: item.createdAt,
-          ...(typeof (item as { data?: string }).data === 'string' ? { data: (item as { data: string }).data } : {}),
+          ...(typeof item.data === 'string' ? { data: item.data } : {}),
         }))
         ;(base[id] as Record<string, unknown>).backupCount = backups.count
         ;(base[id] as Record<string, unknown>).backupItems = items.length > 0 ? items : []
