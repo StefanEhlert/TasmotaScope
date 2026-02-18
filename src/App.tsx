@@ -230,7 +230,6 @@ function App() {
     if (couchState !== 'ok') return
     let cancelled = false
     let abortController: AbortController | null = null
-    let pollInterval: ReturnType<typeof setInterval> | null = null
 
     const apply = (data: Record<string, unknown>) => {
       if (cancelled) return
@@ -298,16 +297,9 @@ function App() {
     void fetchDevicesFromBackend().then(apply)
     void runStream()
 
-    const POLL_MS = 15000
-    pollInterval = setInterval(() => {
-      if (cancelled) return
-      void fetchDevicesFromBackend().then(apply)
-    }, POLL_MS)
-
     return () => {
       cancelled = true
       abortController?.abort()
-      if (pollInterval) clearInterval(pollInterval)
     }
   }, [couchState])
 
