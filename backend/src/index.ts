@@ -7,6 +7,7 @@ import {
   deleteBrokerAndDevices,
   ensureCouchDbInitialized,
   fetchBrokers,
+  fetchDeviceSnapshots,
   updateBroker,
   upsertDeviceSnapshot,
   type BrokerConfig,
@@ -139,8 +140,40 @@ function devicesWithConsole(): Record<string, Record<string, unknown>> {
   return out
 }
 
-statusRouter.get('/devices', (_req: Request, res: Response) => {
-  res.json(devicesWithConsole())
+/** Geräteliste inkl. Konsolen; Backup-Daten aus CouchDB (Single Source of Truth), nicht aus dem Store. */
+async function devicesWithConsoleFromCouchDb(): Promise<Record<string, Record<string, unknown>>> {
+  const base = devicesWithConsole()
+  const couchdb = getCouchDb()
+  if (!couchdb) return base
+  try {
+    const docs = await fetchDeviceSnapshots(couchdb)
+    const byId = new Map(docs.map((d) => [d.deviceId, d]))
+    for (const id of Object.keys(base)) {
+      const doc = byId.get(id)
+      const backups = doc?.backups
+      if (backups) {
+        const items = (backups.items ?? []).map((item: { createdAt: string; data?: string }) => ({
+          createdAt: item.createdAt,
+          ...(typeof (item as { data?: string }).data === 'string' ? { data: (item as { data: string }).data } : {}),
+        }))
+        ;(base[id] as Record<string, unknown>).backupCount = backups.count
+        ;(base[id] as Record<string, unknown>).backupItems = items.length > 0 ? items : []
+        ;(base[id] as Record<string, unknown>).daysSinceBackup =
+          backups.lastAt != null
+            ? Math.floor((Date.now() - new Date(backups.lastAt).getTime()) / 86400000)
+            : null
+      }
+    }
+  } catch (err) {
+    console.error('[devicesWithConsoleFromCouchDb] CouchDB-Backups lesen fehlgeschlagen:', err)
+  }
+  return base
+}
+
+statusRouter.get('/devices', async (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+  const data = await devicesWithConsoleFromCouchDb()
+  res.json(data)
 })
 
 statusRouter.post('/command', (req: Request, res: Response) => {
@@ -163,50 +196,65 @@ statusRouter.post('/command', (req: Request, res: Response) => {
 const sseClients = new Set<{ res: Response }>()
 let sseSequence = 0
 let sseUnsubscribe: (() => void) | null = null
+let sseBroadcastInProgress = false
+let sseBroadcastDirty = false
 
-/** Ein Snapshot mit monotoner Sequenznummer; gleiche Seq für alle Clients pro Store-Update (vermeidet out-of-order). */
-function getNextSnapshot(): Record<string, unknown> {
-  sseSequence += 1
-  return { _sequence: sseSequence, ...devicesWithConsole() }
-}
-
-function broadcastSnapshot(): void {
-  const data = getNextSnapshot()
-  const payload = `data: ${JSON.stringify(data)}\n\n`
-  for (const { res } of sseClients) {
-    try {
-      res.write(payload)
-      const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
-      if (sock?.flush) sock.flush()
-    } catch {
-      // Client evtl. getrennt
-    }
+function runBroadcastSnapshot(): void {
+  if (sseBroadcastInProgress) {
+    sseBroadcastDirty = true
+    return
   }
+  sseBroadcastInProgress = true
+  void (async () => {
+    try {
+      const base = await devicesWithConsoleFromCouchDb()
+      sseSequence += 1
+      const data = { _sequence: sseSequence, ...base }
+      const payload = `data: ${JSON.stringify(data)}\n\n`
+      for (const { res } of sseClients) {
+        try {
+          res.write(payload)
+          const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+          if (sock?.flush) sock.flush()
+        } catch {
+          // Client evtl. getrennt
+        }
+      }
+    } finally {
+      sseBroadcastInProgress = false
+      if (sseBroadcastDirty) {
+        sseBroadcastDirty = false
+        runBroadcastSnapshot()
+      }
+    }
+  })()
 }
 
-statusRouter.get('/devices/stream', (_req: Request, res: Response) => {
+statusRouter.get('/devices/stream', async (_req: Request, res: Response) => {
   const store = getDeviceStore()
   if (!store) {
     res.status(503).json({ error: 'Listener nicht aktiv' })
     return
   }
   res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders?.()
 
   try {
-    const initial = getNextSnapshot()
+    const base = await devicesWithConsoleFromCouchDb()
+    sseSequence += 1
+    const initial = { _sequence: sseSequence, ...base }
     res.write(`data: ${JSON.stringify(initial)}\n\n`)
     const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
     if (sock?.flush) sock.flush()
-  } catch {
-    // Client evtl. sofort getrennt
+  } catch (err) {
+    console.error('[SSE] Initial-Snapshot fehlgeschlagen:', err)
   }
 
   sseClients.add({ res })
   if (sseUnsubscribe === null) {
-    sseUnsubscribe = store.subscribe(broadcastSnapshot)
+    sseUnsubscribe = store.subscribe(runBroadcastSnapshot)
   }
 
   res.on('close', () => {

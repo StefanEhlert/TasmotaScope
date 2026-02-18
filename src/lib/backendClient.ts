@@ -110,7 +110,7 @@ export async function fetchBrokersFromBackend(baseUrl?: string): Promise<BrokerC
 
 export async function fetchDevicesFromBackend(baseUrl?: string): Promise<Record<string, unknown>> {
   const url = (baseUrl ?? BACKEND_BASE).replace(/\/$/, '') + '/devices'
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000), cache: 'no-store' })
   if (!res.ok) return {}
   return (await res.json()) as Record<string, unknown>
 }
