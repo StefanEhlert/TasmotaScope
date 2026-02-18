@@ -160,7 +160,29 @@ statusRouter.post('/command', (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-const sseClients = new Set<{ res: Response; unsubscribe: () => void }>()
+const sseClients = new Set<{ res: Response }>()
+let sseSequence = 0
+let sseUnsubscribe: (() => void) | null = null
+
+/** Ein Snapshot mit monotoner Sequenznummer; gleiche Seq für alle Clients pro Store-Update (vermeidet out-of-order). */
+function getNextSnapshot(): Record<string, unknown> {
+  sseSequence += 1
+  return { _sequence: sseSequence, ...devicesWithConsole() }
+}
+
+function broadcastSnapshot(): void {
+  const data = getNextSnapshot()
+  const payload = `data: ${JSON.stringify(data)}\n\n`
+  for (const { res } of sseClients) {
+    try {
+      res.write(payload)
+      const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+      if (sock?.flush) sock.flush()
+    } catch {
+      // Client evtl. getrennt
+    }
+  }
+}
 
 statusRouter.get('/devices/stream', (_req: Request, res: Response) => {
   const store = getDeviceStore()
@@ -173,28 +195,30 @@ statusRouter.get('/devices/stream', (_req: Request, res: Response) => {
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders?.()
 
-  const sendSnapshot = () => {
-    try {
-      const payload = `data: ${JSON.stringify(devicesWithConsole())}\n\n`
-      res.write(payload)
-      const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
-      if (sock?.flush) sock.flush()
-    } catch {
-      // Client evtl. getrennt
-    }
+  try {
+    const initial = getNextSnapshot()
+    res.write(`data: ${JSON.stringify(initial)}\n\n`)
+    const sock = (res as unknown as { socket?: { flush?: () => void } }).socket
+    if (sock?.flush) sock.flush()
+  } catch {
+    // Client evtl. sofort getrennt
   }
 
-  sendSnapshot()
-  const unsubscribe = store.subscribe(sendSnapshot)
-  sseClients.add({ res, unsubscribe })
+  sseClients.add({ res })
+  if (sseUnsubscribe === null) {
+    sseUnsubscribe = store.subscribe(broadcastSnapshot)
+  }
 
   res.on('close', () => {
-    unsubscribe()
     for (const c of sseClients) {
       if (c.res === res) {
         sseClients.delete(c)
         break
       }
+    }
+    if (sseClients.size === 0 && sseUnsubscribe) {
+      sseUnsubscribe()
+      sseUnsubscribe = null
     }
   })
 })

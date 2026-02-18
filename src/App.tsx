@@ -95,6 +95,8 @@ function App() {
   const lastRulesUpdateRef = useRef<{ deviceId: string; at: number } | null>(null)
   /** Verhindert, dass Poll/SSE einen gerade gespeicherten Gerätetyp mit veralteten Backend-Daten überschreibt. */
   const lastDeviceTypeUpdateRef = useRef<{ deviceId: string; value: string | undefined; at: number } | null>(null)
+  /** Ignoriert out-of-order SSE-Events (z. B. über VPN); nur neuere Sequenz anwenden. */
+  const lastSseSequenceRef = useRef<number>(-1)
 
   useEffect(() => {
     let cancelled = false
@@ -236,7 +238,13 @@ function App() {
       if (data.BlakadderCrawlerSync !== undefined && Object.keys(data).every((k) => k === 'BlakadderCrawlerSync')) {
         return
       }
-      const asRecord = data as Record<string, Record<string, unknown>>
+      const seq = data._sequence as number | undefined
+      if (typeof seq === 'number') {
+        if (seq <= lastSseSequenceRef.current) return
+        lastSseSequenceRef.current = seq
+      }
+      const { _sequence: _seq, ...rest } = data
+      const asRecord = rest as Record<string, Record<string, unknown>>
       const recent = lastAutoBackupUpdateRef.current
       if (recent && Date.now() - recent.at < 3000 && asRecord[recent.deviceId]) {
         asRecord[recent.deviceId] = {
